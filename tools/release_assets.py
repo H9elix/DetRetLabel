@@ -54,9 +54,11 @@ def stage_assets(root: Path = ROOT, tag: str | None = None) -> Path:
             raise ValueError(f"Build output failed integrity verification: {name}")
     destination = output / "release"
     destination.mkdir(exist_ok=True)
-    for name in (*names, "build-manifest.json", "使用说明.txt"):
+    for name in (*names, "build-manifest.json"):
         shutil.copyfile(output / name, destination / name)
-    sums = [f"{digest(destination / name)}  {name}\n" for name in (*names, "build-manifest.json", "使用说明.txt")]
+    # GitHub normalizes non-ASCII asset names; use a stable ASCII upload name.
+    shutil.copyfile(output / "使用说明.txt", destination / "USAGE.txt")
+    sums = [f"{digest(destination / name)}  {name}\n" for name in (*names, "build-manifest.json", "USAGE.txt")]
     (destination / "SHA256SUMS.txt").write_text("".join(sums), encoding="utf-8", newline="\n")
     notes = f"""作者：**{manifest['author']}** · **{manifest['build']}** · Windows 64 位
 

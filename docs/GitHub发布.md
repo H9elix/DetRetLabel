@@ -46,7 +46,7 @@ git push origin v0.2.0
 | `DetRetLabel-single.exe` | 可独立运行的单文件程序 |
 | `DetRetLabel-single-win64.zip` | 单文件程序及简明说明 |
 | `DetRetLabel-folder-win64.zip` | 完整文件夹版；解压后运行其中的 exe，保留 `_internal` |
-| `使用说明.txt` | 简明操作说明 |
+| `USAGE.txt` | 简明操作说明；使用英文附件名保证 GitHub 下载名与校验清单一致 |
 | `build-manifest.json` | 作者、版本、Build、依赖、提交和运行检查信息 |
 | `SHA256SUMS.txt` | 上述附件的 SHA-256 校验值 |
 | GitHub 自动提供的 Source code | 该标签对应的源码压缩包，不是已打包程序 |

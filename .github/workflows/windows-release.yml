@@ -67,7 +67,7 @@ jobs:
             dist/windows-x64/release/DetRetLabel-folder-win64.zip
             dist/windows-x64/release/build-manifest.json
             dist/windows-x64/release/SHA256SUMS.txt
-            dist/windows-x64/release/使用说明.txt
+            dist/windows-x64/release/USAGE.txt
             dist/windows-x64/release/RELEASE_NOTES.md
           if-no-files-found: error
           compression-level: 0
@@ -123,5 +123,5 @@ jobs:
             DetRetLabel-single.exe \
             DetRetLabel-single-win64.zip \
             DetRetLabel-folder-win64.zip \
-            build-manifest.json SHA256SUMS.txt 使用说明.txt --clobber
+            build-manifest.json SHA256SUMS.txt USAGE.txt --clobber
           gh release edit "$TAG_NAME" --draft=false --latest

@@ -42,6 +42,8 @@ class ReleaseAssetTests(unittest.TestCase):
         unrelated.write_bytes(b"private")
         destination = stage_assets(self.root, "v0.1.0")
         self.assertFalse((destination / unrelated.name).exists())
+        self.assertTrue((destination / "USAGE.txt").exists())
+        self.assertFalse((destination / "使用说明.txt").exists())
         self.assertIn("H9elix", (destination / "RELEASE_NOTES.md").read_text(encoding="utf-8"))
         checksums = (destination / "SHA256SUMS.txt").read_bytes()
         self.assertNotIn(b"\r", checksums)
