@@ -35,7 +35,7 @@ class GuiTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.folder = Path(self.temp.name)
+        self.folder = Path(self.temp.name).resolve()
         image = QImage(640, 400, QImage.Format.Format_RGB32)
         image.fill(QColor("#bbd6e2"))
         self.assertTrue(image.save(str(self.folder / "0001.jpg")))

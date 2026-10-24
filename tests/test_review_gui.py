@@ -35,7 +35,7 @@ class ReviewGuiTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.folder = Path(self.temp.name)
+        self.folder = Path(self.temp.name).resolve()
         image = QImage(640, 400, QImage.Format.Format_RGB32)
         image.fill(QColor("#c7d9ed"))
         for filename in ("01.jpg", "02.png", "03.jpg"):
@@ -1465,7 +1465,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.w.close()
         transfer = tempfile.TemporaryDirectory()
         self.addCleanup(transfer.cleanup)
-        destination = Path(transfer.name) / "copied-images"
+        destination = Path(transfer.name).resolve() / "copied-images"
         shutil.copytree(self.folder, destination)
         self.folder = destination
         fresh = QSettings(str(Path(transfer.name) / "new-machine.ini"), QSettings.Format.IniFormat)
