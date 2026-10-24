@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+artifacts/
+test_data/_downloads/
+
+# Personal review progress, local settings and credentials.
+**/.detretlabel/
+.env
+.env.*
+!.env.example
+*.log
+*.xlsx
+*.xls
+
+# Native packages are distributed through Releases, not Git history.
+*.exe
+*.dll
+*.pyd
+*.zip
+
+# Keep the test-pack instructions and mappings; regenerate the downloaded data.
+test_data/*
+!test_data/README.md
+!test_data/coco128/
+test_data/coco128/*
+!test_data/coco128/开始测试.md
+!test_data/coco128/type-mapping.txt

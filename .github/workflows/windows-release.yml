@@ -1,0 +1,127 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Test and build single + folder
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.14.5"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+            requirements-release.txt
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-release.txt
+      - name: Check application version and release tag
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            python tools/release_assets.py --check-version --tag $env:GITHUB_REF_NAME
+          } else {
+            python tools/release_assets.py --check-version
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run tests
+        run: python -B -m unittest discover -v
+      - name: Build and verify both executables
+        run: python -B tools/build_windows.py
+      - name: Prepare release assets and checksums
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            python tools/release_assets.py --tag $env:GITHUB_REF_NAME
+          } else {
+            python tools/release_assets.py
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Keep Windows packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-x64
+          path: |
+            dist/windows-x64/release/DetRetLabel-single.exe
+            dist/windows-x64/release/DetRetLabel-single-win64.zip
+            dist/windows-x64/release/DetRetLabel-folder-win64.zip
+            dist/windows-x64/release/build-manifest.json
+            dist/windows-x64/release/SHA256SUMS.txt
+            dist/windows-x64/release/使用说明.txt
+            dist/windows-x64/release/RELEASE_NOTES.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Keep diagnostic logs and verification results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-diagnostics
+          path: |
+            build/windows-x64/pyinstaller.log
+            build/windows-x64/windows/warn-windows.txt
+            artifacts/packaging/**/result.json
+            artifacts/packaging/**/help.png
+            artifacts/packaging/**/window.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-x64
+          path: release
+      - name: Publish verified release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check SHA256SUMS.txt
+          if state=$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$state" != "true" ]; then
+              echo "This version is already published. Push a new version tag to publish changes."
+              exit 1
+            fi
+          else
+            gh release create "$TAG_NAME" --verify-tag --draft \
+              --title "DetRetLabel $TAG_NAME" --notes-file RELEASE_NOTES.md
+          fi
+          gh release upload "$TAG_NAME" \
+            DetRetLabel-single.exe \
+            DetRetLabel-single-win64.zip \
+            DetRetLabel-folder-win64.zip \
+            build-manifest.json SHA256SUMS.txt 使用说明.txt --clobber
+          gh release edit "$TAG_NAME" --draft=false --latest

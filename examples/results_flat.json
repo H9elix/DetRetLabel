@@ -1,0 +1,4 @@
+[
+  {"name": "0001.jpg", "xmin": 100, "ymin": 80, "xmax": 340, "ymax": 280, "type": "car", "score": 0.95},
+  {"name": "0001.jpg", "xmin": 400, "ymin": 120, "xmax": 470, "ymax": 300, "type": "person", "score": 0.82}
+]

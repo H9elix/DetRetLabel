@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "path": "/tmp/0001.jpg",
+      "detections": [
+        {"bbox": [100, 80, 340, 280], "type": "car", "conf": 0.95},
+        {"bbox": [400, 120, 470, 300], "type": "person", "conf": 0.82}
+      ]
+    },
+    {"path": "C:\\algorithm\\0002.png", "detections": []},
+    {"path": "/tmp/not_in_dataset.jpg", "detections": [{"bbox": [10, 20, 80, 90], "type": "person", "conf": 0.6}]}
+  ]
+}

@@ -1,0 +1,23 @@
+# 常见 COCO 种类显示示例；其余种类保留原值。UTF-8，每行一个代号:显示名称。
+person:行人
+bicycle:自行车
+car:汽车
+motorcycle:摩托车
+airplane:飞机
+bus:公交车
+train:火车
+truck:卡车
+boat:船
+traffic light:交通灯
+fire hydrant:消防栓
+stop sign:停车标志
+bench:长椅
+bird:鸟
+cat:猫
+dog:狗
+horse:马
+sheep:羊
+cow:牛
+chair:椅子
+couch:沙发
+clock:时钟

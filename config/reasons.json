@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "reasons": {
+    "false_positive": ["种类检错", "单纯误检", "重复检出", "框位置不准", "其他"],
+    "false_negative": ["完全未检出", "置信度过低", "遮挡或截断", "目标过小", "其他"]
+  },
+  "auto_advance": true,
+  "shortcuts": {
+    "decision_1": "1", "decision_2": "2", "decision_3": "3",
+    "decision_4": "4", "decision_5": "5", "decision_6": "6",
+    "decision_7": "7", "decision_8": "8", "decision_9": "9",
+    "previous_target": "Up", "next_target": "Down",
+    "previous_image": "Left", "next_image": "Right",
+    "confirm": "Return", "back": "Escape", "clear": "Backspace",
+    "next_unreviewed": "N", "draw_missed": "B", "toggle_ground_truth": "G",
+    "hold_all_algorithm": "H", "all_positive": "Ctrl+1",
+    "start_review": "R", "finish_review": "Ctrl+Return", "next_review_image": "M",
+    "undo": "Ctrl+Z", "save": "Ctrl+S"
+  }
+}
