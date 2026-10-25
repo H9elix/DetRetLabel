@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QSettings, Qt, QUrl
-from PySide6.QtGui import QImage, QColor, QFontDatabase
+from PySide6.QtGui import QImage, QColor, QFontDatabase, QTextDocument
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QGraphicsItem, QTableWidget
 
@@ -139,6 +139,48 @@ class GuiTests(unittest.TestCase):
         help_window.open_link(readme, QUrl("../../outside.txt"))
         self.assertIn("只打开程序内", help_window.message.text())
         self.assertEqual(help_window.tabs.count(), 2)
+        help_window.close()
+
+    def test_illustrated_help_loads_relative_images_and_fits_after_resizing(self):
+        self.window.show_help(0)
+        help_window = self.window._help_dialog
+
+        def images(browser):
+            formats = []
+            block = browser.document().begin()
+            while block.isValid():
+                iterator = block.begin()
+                while not iterator.atEnd():
+                    fragment = iterator.fragment()
+                    if fragment.isValid() and fragment.charFormat().isImageFormat():
+                        formats.append(fragment.charFormat().toImageFormat())
+                    iterator += 1
+                block = block.next()
+            return formats
+
+        for tab, expected in ((0, 2), (1, 7)):
+            help_window.tabs.setCurrentIndex(tab)
+            QTest.qWait(20)
+            browser = help_window.tabs.currentWidget()
+            self.assertEqual(len(images(browser)), expected)
+            for format_ in images(browser):
+                resource = browser.document().resource(QTextDocument.ResourceType.ImageResource, QUrl(format_.name()))
+                self.assertIsNotNone(resource)
+                self.assertGreater(resource.width(), 0)
+                self.assertGreater(format_.width(), 0)
+                self.assertLessEqual(format_.width(), browser.viewport().width())
+                self.assertAlmostEqual(format_.height() / format_.width(), resource.height() / resource.width())
+        browser = help_window.tabs.currentWidget()
+        wide_width = images(browser)[0].width()
+        help_window.resize(740, 600)
+        QTest.qWait(20)
+        narrow_width = images(browser)[0].width()
+        self.assertLess(narrow_width, wide_width)
+        self.assertLessEqual(narrow_width, browser.viewport().width())
+        help_window.resize(1200, 800)
+        QTest.qWait(20)
+        self.assertGreater(images(browser)[0].width(), narrow_width)
+        self.assertTrue(browser.isReadOnly())
         help_window.close()
 
     def test_mapping_dialog_autodetects_and_can_select_xywh(self):

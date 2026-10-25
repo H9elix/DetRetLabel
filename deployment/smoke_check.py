@@ -23,7 +23,7 @@ def run(destination: str) -> int:
 
     try:
         from PySide6.QtCore import QEvent, QSettings, Qt, QUrl, qVersion
-        from PySide6.QtGui import QColor, QImage, QImageReader, QKeyEvent
+        from PySide6.QtGui import QColor, QImage, QImageReader, QKeyEvent, QTextDocument
         from PySide6.QtWidgets import QApplication, QDialog
         from openpyxl import load_workbook
 
@@ -77,6 +77,9 @@ def run(destination: str) -> int:
         readme_browser = help_window.tabs.widget(0)
         help_window.open_link(readme_browser, QUrl("docs/使用指南.md"))
         check(help_window.tabs.currentIndex() == 1 and "审核算法结果" in help_window.tabs.currentWidget().toPlainText(), "Bundled user guide and relative document links")
+        illustration = help_window.tabs.currentWidget().document().resource(
+            QTextDocument.ResourceType.ImageResource, QUrl("images/05-gt-linkage.png"))
+        check(illustration is not None and illustration.width() > 0, "Bundled illustrated guide loads offline images")
         help_window.search.setText("换机交接")
         help_window.search.setFocus()
         app.sendEvent(help_window.search, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier))
@@ -99,8 +102,8 @@ def run(destination: str) -> int:
         check(len(window.images) == 2, "Unicode and space-containing image folder")
         data = {"results": [
             {"path": "/tmp/01.jpg", "detections": [
-                {"bbox": [10, 20, 120, 180], "type": "person", "conf": 0.9},
-                {"bbox": [220, 50, 300, 190], "type": "car", "conf": 0.8}]},
+                {"bbox": [220, 50, 300, 190], "type": "car", "conf": 0.8},
+                {"bbox": [10, 20, 120, 180], "type": "person", "conf": 0.9}]},
             {"path": "C:\\other\\02.png", "detections": []}]}
         gt = copy.deepcopy(data)
         for record in gt["results"]:
@@ -122,6 +125,8 @@ def run(destination: str) -> int:
         check(len(window.image_view.overlay_items["algorithm"]) == 2, "Detection box overlays")
 
         review = window.review
+        check(review.current.category == "person" and review.current.target_index == 2,
+              "Confidence ordering preserves original JSON identity")
         first_id = review.current.id
         review.choose_status("true_positive")
         review.choose_status("false_positive")

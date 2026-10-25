@@ -10,6 +10,7 @@ class GTCandidate:
     index: int  # one-based table / overlay index
     box: tuple[float, float, float, float]
     category: str | None
+    original_order: tuple[int, int] | None = None  # JSON record / target, independent of display order
 
 
 @dataclass(frozen=True)
@@ -39,13 +40,19 @@ def box_iou(left: tuple, right: tuple) -> float:
 def match_gt(box: tuple, category: str | None, candidates: tuple[GTCandidate, ...],
              cancel: Event | None = None) -> GTMatch | None:
     same_index, same_iou, best_index, best_iou, best_same = 0, 0.0, 0, 0.0, False
+    same_order = best_order = None
     for number, candidate in enumerate(candidates):
         if number % 128 == 0 and cancel is not None and cancel.is_set():
             return None
         iou = box_iou(box, candidate.box)
         same = bool(category and candidate.category and category == candidate.category)
-        if iou > best_iou:
+        original_order = candidate.original_order if candidate.original_order is not None else (number, 0)
+        if iou > best_iou or (iou > 0 and iou == best_iou and
+                             (best_order is None or original_order < best_order)):
             best_index, best_iou, best_same = candidate.index, iou, same
-        if same and iou > same_iou:
+            best_order = original_order
+        if same and (iou > same_iou or (iou > 0 and iou == same_iou and
+                                       (same_order is None or original_order < same_order))):
             same_index, same_iou = candidate.index, iou
+            same_order = original_order
     return GTMatch(same_index, same_iou, best_index, best_iou, best_same)

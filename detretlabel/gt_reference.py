@@ -77,7 +77,8 @@ class GTReferenceController(QObject):
             if candidates:
                 # Only the active target is compared. No image-wide all-pairs computation.
                 payload = tuple(GTCandidate(i, candidate.box,
-                    self.w.category_display("ground_truth", candidate.category)) for i, candidate in enumerate(candidates, 1))
+                    self.w.category_display("ground_truth", candidate.category),
+                    (candidate.record_index, candidate.target_index)) for i, candidate in enumerate(candidates, 1))
                 self._pending = (self._generation, target.box, self.w.category_display("algorithm", target.category), payload)
                 self.w.gt_match_status.setText("正在后台匹配 GT…可继续切图或审核。")
                 self.timer.start(0)

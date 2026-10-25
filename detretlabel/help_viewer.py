@@ -5,8 +5,8 @@ import re
 import unicodedata
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QTextBrowser, QVBoxLayout,
@@ -18,6 +18,47 @@ from .app_info import AUTHOR, BUILD, RESOURCE_ROOT, VERSION
 def heading_slug(text: str) -> str:
     text = "".join(c for c in text.lower() if not unicodedata.category(c).startswith("P") or c in "-_")
     return re.sub(r"\s", "-", text)
+
+
+class HelpBrowser(QTextBrowser):
+    """Keep documentation images readable without horizontal overflow."""
+    def __init__(self):
+        super().__init__()
+        self._fit_pending = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._fit_pending:
+            self._fit_pending = True
+            QTimer.singleShot(0, self.fit_images)
+
+    def fit_images(self):
+        self._fit_pending = False
+        document = self.document()
+        maximum = max(1, self.viewport().width() - 2 * document.documentMargin())
+        updates = []
+        block = document.begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid() and fragment.charFormat().isImageFormat():
+                    format_ = fragment.charFormat().toImageFormat()
+                    image = document.resource(QTextDocument.ResourceType.ImageResource, QUrl(format_.name()))
+                    if image is not None and hasattr(image, "width") and image.width() > 0:
+                        width = min(image.width(), maximum)
+                        height = image.height() * width / image.width()
+                        if abs(format_.width() - width) > .5 or abs(format_.height() - height) > .5:
+                            format_.setWidth(width)
+                            format_.setHeight(height)
+                            updates.append((fragment.position(), fragment.length(), format_))
+                iterator += 1
+            block = block.next()
+        for position, length, format_ in updates:
+            cursor = QTextCursor(document)
+            cursor.setPosition(position)
+            cursor.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+            cursor.setCharFormat(format_)
 
 
 class HelpDialog(QDialog):
@@ -82,7 +123,7 @@ class HelpDialog(QDialog):
             if existing == path:
                 self.tabs.setCurrentWidget(browser)
                 return browser
-        browser = QTextBrowser()
+        browser = HelpBrowser()
         browser.setOpenLinks(False)
         browser.setOpenExternalLinks(False)
         browser.setStyleSheet("QTextBrowser { background: white; border: 0; padding: 12px; }")
@@ -91,6 +132,7 @@ class HelpDialog(QDialog):
             "td, th { padding: 5px; } th { background-color: #eaf0f7; } "
             "pre { background-color: #f2f5f9; } a { color: #2563eb; }"
         )
+        browser.document().setBaseUrl(QUrl.fromLocalFile(str(path)))
         self.paths[browser] = path
         try:
             text = path.read_text(encoding="utf-8-sig")
@@ -101,10 +143,10 @@ class HelpDialog(QDialog):
                 browser.setPlainText(text)
         except (OSError, UnicodeError) as exc:
             browser.setPlainText(f"无法读取帮助文档：{path.name}\n\n{exc}\n\n请检查程序文件是否完整。")
-        browser.document().setBaseUrl(QUrl.fromLocalFile(str(path)))
         browser.anchorClicked.connect(lambda url, b=browser: self.open_link(b, url))
         self.tabs.addTab(browser, title or path.name)
         self.tabs.setCurrentWidget(browser)
+        browser.fit_images()
         return browser
 
     @staticmethod
@@ -147,6 +189,7 @@ class HelpDialog(QDialog):
                 return
             browser = self.open_document(target)
         if resolved.fragment():
+            browser.fit_images()
             browser.scrollToAnchor(resolved.fragment())
         self.message.setText("文档随程序内置，可离线查看。")
 

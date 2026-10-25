@@ -243,6 +243,12 @@ class Detection:
     raw: dict[str, Any] = field(repr=False)
 
 
+def sort_detections(targets: list[Detection]) -> None:
+    """Stable display/review order; original JSON positions and identities stay intact."""
+    targets.sort(key=lambda target: (target.score is None,
+                                     -target.score if target.score is not None else 0.0))
+
+
 @dataclass(frozen=True)
 class ImportIssue:
     kind: str
@@ -310,7 +316,9 @@ def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int) -> Detect
         raise ValueError("记录缺少映射的种类字段")
     score = None
     if mapping.score_field:
-        score = _number(read_pointer(raw, mapping.score_field), "置信度")
+        value = read_pointer(raw, mapping.score_field, None)
+        if value is not None:
+            score = _number(value, "置信度")
     return Detection((x, y, a, b), category, score, ri, ti, raw)
 
 
@@ -354,4 +362,8 @@ def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path])
             else:
                 if path is not None:
                     result.detections[path].append(detection)
+    # Import runs in a worker. Cache one order for tables, review queues, boxes and reports;
+    # never sort on image selection or mutate the source document used for stable identities.
+    for targets in result.detections.values():
+        sort_detections(targets)
     return result

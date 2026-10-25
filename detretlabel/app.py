@@ -601,6 +601,8 @@ class MainWindow(QMainWindow):
             host = self.target_tabs if role == "algorithm" else self.gt_tabs
             host.addTab(table, title + " (0)")
         self.target_tables["manual"].setToolTip("单击只叠加查看人工补框，保留当前审核目标；双击进入漏检复核编辑该框的原因和备注。")
+        for role in ("algorithm", "ground_truth"):
+            self.target_tables[role].setToolTip("按置信度从高到低显示，同分保持原始顺序；未导入置信度时保持原始顺序。目标序号与图片中的框一致，可悬停查看原始 JSON 位置。")
         self.target_table = self.target_tables["algorithm"]
         self.target_tabs.currentChanged.connect(self._update_target_title)
         self.gt_tabs.currentChanged.connect(self._reference_tab_changed)
@@ -1042,7 +1044,8 @@ class MainWindow(QMainWindow):
                           str(target.score) if target.score is not None else "—", *(f"{v:g}" for v in target.box)]
                 for ci, value in enumerate(values):
                     item = QTableWidgetItem(value)
-                    item.setToolTip(f"{self.sources[role].title}原始 JSON：第 {target.record_index} 条记录，第 {target.target_index} 个目标")
+                    item.setToolTip(f"当前显示序号：{ri + 1}（与叠加框一致）\n"
+                                    f"{self.sources[role].title}原始 JSON：第 {target.record_index} 条记录，第 {target.target_index} 个目标")
                     if ci == 1:
                         item.setToolTip(f"原始种类：{category_text(target.category)}\n" + item.toolTip())
                     table.setItem(ri, ci, item)

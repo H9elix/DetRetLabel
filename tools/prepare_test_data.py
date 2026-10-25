@@ -312,7 +312,7 @@ def build_pack(output: Path, archive: Path) -> dict:
                                "images_without_json_record": len(images) - len(result.referenced)}
         if not filename.startswith("06_") and result.issues:
             raise AssertionError(f"Unexpected import issues: {filename}: {result.issue_counts}")
-    expected_errors = {"目标数据无效": 3, "目标列表无效": 1, "图片字段无效": 1, "图片未匹配": 1}
+    expected_errors = {"目标数据无效": 2, "目标列表无效": 1, "图片字段无效": 1, "图片未匹配": 1}
     if validation["06_import_edge_cases.json"]["issues"] != expected_errors:
         raise AssertionError("Unexpected edge-case results")
     duplicate_result = import_results(duplicate_data, guess_mapping(duplicate_data, Collection("/results")),
@@ -363,7 +363,7 @@ JSON 路径故意混用 Linux / Windows 路径，均应按最后的文件名匹�
 | `03_results_flat.json` | 每条记录一个目标 | 根节点、`/name`、平铺记录、xmin/ymin/xmax/ymax、`/type`、`/score` |
 | `04_custom_fields.json` | 嵌套自定义字段，测试手动链接 | 见下方说明 |
 | `05_simulated_detection_errors.json` | 人工加入类别错误、漏框、额外框、低分正确框、空结果和缺少图片记录 | 与 01 相同 |
-| `06_import_edge_cases.json` | 故意损坏部分目标、缺少置信度、无效图片字段、无效列表、未匹配文件名 | 与 01 相同，预期 6 条问题 |
+| `06_import_edge_cases.json` | 故意损坏部分目标、缺少置信度、无效图片字段、无效列表、未匹配文件名 | 与 01 相同，预期 5 条问题；缺少置信度的目标保留并排在末尾 |
 | `07_filename_dictionary.json` | 直接以图片名作为字典键 | 根节点、字典键、`/detections`、`/bbox`、xyxy |
 | `ground_truth.json` | 数据集真实框，不添加置信度 | 与 01 相同；置信度选择“不导入” |
 

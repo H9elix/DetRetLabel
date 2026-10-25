@@ -78,6 +78,9 @@ def stage_assets(root: Path = ROOT, tag: str | None = None) -> Path:
 
 版本：{version} · 提交：{os.environ.get('GITHUB_SHA', '本地构建')}
 """
+    version_notes = root / "docs" / "releases" / f"v{version}.md"
+    if version_notes.is_file():
+        notes = version_notes.read_text(encoding="utf-8-sig")
     (destination / "RELEASE_NOTES.md").write_text(notes, encoding="utf-8", newline="\n")
     return destination
 

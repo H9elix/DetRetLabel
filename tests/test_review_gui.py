@@ -17,7 +17,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from detretlabel.app import MainWindow, STYLE
-from detretlabel.annotation import AnnotationStore, ReviewConfig, ReviewTarget
+from detretlabel.annotation import AnnotationStore, ReviewConfig, ReviewTarget, source_signature
+from detretlabel.core import Collection, guess_mapping, parse_detection
 from detretlabel.mapping_dialog import MappingDialog
 from detretlabel.type_mapping import TypeMapping
 from detretlabel.box_style import BoxStyle, mismatch_color
@@ -96,6 +97,100 @@ class ReviewGuiTests(unittest.TestCase):
         self.app.processEvents()
         self.assertIsNone(reference._job)
         self.assertIsNone(reference._pending)
+
+    def test_confidence_order_keeps_review_tables_overlays_and_report_synchronized(self):
+        data = copy.deepcopy(self.data)
+        data["results"][0]["detections"] = [
+            {"bbox": [10, 20, 120, 180], "type": "low"},
+            {"bbox": [220, 50, 300, 190], "type": "high-first", "conf": .9},
+            {"bbox": [330, 50, 400, 190], "type": "high-second", "conf": .9}]
+        original = copy.deepcopy(data)
+        self.import_source(data)
+        review, view = self.w.review, self.w.image_view
+        table = self.w.target_tables["algorithm"]
+        expected = ["high-first", "high-second", "low"]
+        self.assertEqual([table.item(row, 1).text() for row in range(3)], expected)
+        self.assertEqual(table.item(2, 2).text(), "—")
+        self.assertEqual([target.category for target in review.queue()], expected)
+        self.assertEqual([target.target_index for target in review.queue()], [2, 3, 1])
+        self.assertEqual(review.current.category, "high-first")
+        for index, target in enumerate(review.queue()):
+            item = view.overlay_items["algorithm"][index]
+            self.assertEqual(item.rect().left(), target.box[0])
+            self.assertEqual(item.data(1), index + 1)
+        review.clicked_target("algorithm", 2)
+        self.assertEqual((review.current.category, table.currentRow(), view.active_index), ("high-second", 1, 2))
+        table.setCurrentCell(2, 0)
+        self.assertEqual((review.current.category, review.current.target_index, view.active_index), ("low", 1, 3))
+        self.assertIn("第 1 个目标", table.item(2, 0).toolTip())
+        low_id = review.current.id
+        review.choose_status("true_positive")
+        self.assertEqual((review.current.category, table.currentRow(), view.active_index), ("high-first", 0, 1))
+        self.assertEqual(review.store.get(low_id)["status"], "true_positive")
+        details = [row for row in review.report_snapshot().targets if row["image"] == "01.jpg"]
+        self.assertEqual([row["raw_type"] for row in details], expected)
+        self.assertEqual([row["number"] for row in details], [1, 2, 3])
+        cached = self.w.sources["algorithm"].result.detections[self.folder / "01.jpg"]
+        with patch("detretlabel.core.sort_detections", side_effect=AssertionError("Must not sort while switching images")):
+            self.w.move_image(1)
+            self.w.move_image(-1)
+        self.assertIs(self.w.sources["algorithm"].result.detections[self.folder / "01.jpg"], cached)
+        self.assertEqual(review.current.category, "high-first")
+        self.assertEqual(data, original)
+
+    def test_sorted_gt_rows_clicks_and_iou_hints_use_matching_overlay_indices(self):
+        gt = [{"name": "01.jpg", "objects": [
+            {"bbox": [10, 20, 120, 180], "type": "car", "conf": .1},
+            {"bbox": [12, 22, 118, 178], "type": "person", "conf": .9},
+            {"bbox": [10, 20, 120, 180], "type": "person", "conf": .8},
+            {"bbox": [450, 300, 500, 350], "type": "unscored"}]}]
+        self.import_source(gt, "ground_truth")
+        self.wait_matches()
+        review, view = self.w.review, self.w.image_view
+        table = self.w.target_tables["ground_truth"]
+        self.assertEqual([float(table.item(row, 2).text()) for row in range(3)], [.9, .8, .1])
+        self.assertEqual(table.item(3, 2).text(), "—")
+        self.assertEqual([target.target_index for target in review.role_targets("ground_truth")], [2, 3, 1, 4])
+        result = review.gt_reference.result
+        self.assertEqual((result.same_index, result.best_index, result.mismatch_index), (2, 3, 3))
+        self.assertEqual(table.item(1, 0).background().color().name(), "#e7f7ec")
+        self.assertEqual(table.item(2, 0).background().color().name(), "#fff5d6")
+        self.w.auto_gt_overlay.setChecked(True)
+        self.assertEqual((view.same_gt_index, view.mismatch_gt_index), (2, 3))
+        target_id = review.current.id
+        table.setCurrentCell(0, 0)
+        self.assertEqual(view.selected_gt_index, 1)
+        self.assertEqual(view.overlay_items["ground_truth"][0].rect().left(), 12)
+        review.clicked_target("ground_truth", 3)
+        self.assertEqual((table.currentRow(), view.selected_gt_index), (2, 3))
+        self.assertEqual(view.overlay_items["ground_truth"][2].rect().left(), 10)
+        self.assertEqual(review.current.id, target_id)
+        self.assertEqual(review.phase, "algorithm")
+
+    def test_annotations_created_before_sorting_keep_their_target_after_reopen(self):
+        data = copy.deepcopy(self.data)
+        data["results"][0]["detections"][0]["conf"] = .2
+        mapping = guess_mapping(data, Collection("/results"))
+        old_detection = parse_detection(data["results"][0]["detections"][0], mapping, 1, 1)
+        legacy = ReviewTarget.from_detection("01.jpg", "algorithm", self.folder / "algorithm.json",
+                                             source_signature(data, mapping), old_detection)
+        self.w.review.store.set_annotation(legacy, "false_positive", "原有原因", "原有备注")
+        self.assertTrue(self.w.review.save(explicit=True))
+        self.import_source(data)
+        queue = self.w.review.queue()
+        self.assertEqual([target.category for target in queue], ["car", "person"])
+        self.assertEqual(queue[1].id, legacy.id)
+        self.assertEqual(self.w.target_tables["algorithm"].item(1, 7).text(), "误检")
+        self.w.close()
+        self.w = MainWindow(self.settings)
+        self.w.show()
+        self.w.scan_folder(self.folder)
+        self.wait()
+        self.import_source(data)
+        self.assertEqual(self.w.review.queue()[1].id, legacy.id)
+        self.assertEqual(self.w.review.current.category, "car")
+        record = self.w.review.store.get(legacy.id)
+        self.assertEqual((record["status"], record["reason"], record["note"]), ("false_positive", "原有原因", "原有备注"))
 
     def test_tables_are_side_by_side_and_algorithm_click_returns_to_review(self):
         self.matching_gt()

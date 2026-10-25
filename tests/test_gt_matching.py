@@ -36,6 +36,15 @@ class GTMatchingTests(unittest.TestCase):
         self.assertEqual(result.mismatch_index, 1)
         self.assertEqual(match_gt((0, 0, 10, 10), "car", ()).best_index, 0)
 
+    def test_iou_ties_keep_original_json_order_after_display_sorting(self):
+        candidates = (GTCandidate(1, (0, 0, 10, 10), "person", (2, 1)),
+                      GTCandidate(2, (0, 0, 10, 10), "person", (1, 2)),
+                      GTCandidate(3, (0, 0, 10, 10), "car", (1, 1)))
+        result = match_gt((0, 0, 10, 10), "person", candidates)
+        self.assertEqual(result.same_index, 2)
+        self.assertEqual(result.best_index, 3)
+        self.assertEqual(result.mismatch_index, 3)
+
     def test_cancelled_task_returns_without_matching(self):
         cancel = Event()
         cancel.set()

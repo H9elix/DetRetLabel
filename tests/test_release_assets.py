@@ -59,3 +59,11 @@ class ReleaseAssetTests(unittest.TestCase):
         self.write_manifest()
         with self.assertRaisesRegex(ValueError, "Both executable"):
             stage_assets(self.root, "v0.1.0")
+
+    def test_version_specific_notes_are_published_without_generic_additions(self):
+        notes = self.root / "docs" / "releases" / "v0.1.0.md"
+        notes.parent.mkdir(parents=True)
+        content = "## 置信度排序\n\n- 从高到低，同分保持原始顺序。\n"
+        notes.write_text(content, encoding="utf-8")
+        destination = stage_assets(self.root, "v0.1.0")
+        self.assertEqual((destination / "RELEASE_NOTES.md").read_text(encoding="utf-8"), content)

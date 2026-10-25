@@ -6,7 +6,7 @@ from pathlib import Path
 
 from detretlabel.core import (
     Collection, FieldMapping, basename, discover_collections, fields, guess_mapping,
-    import_results, load_json, parse_detection, read_pointer, scan_images,
+    Detection, import_results, load_json, parse_detection, read_pointer, scan_images, sort_detections,
 )
 
 
@@ -92,8 +92,8 @@ class ImportTests(unittest.TestCase):
             42,
         ]
         result = import_results(data, guess_mapping(data, Collection("")), self.images)
-        self.assertEqual(result.matched_target_count, 1)
-        self.assertEqual(result.issue_counts["目标数据无效"], 3)
+        self.assertEqual(result.matched_target_count, 2)
+        self.assertEqual(result.issue_counts["目标数据无效"], 2)
         self.assertEqual(result.issue_counts["图片字段无效"], 2)
         self.assertEqual(result.issues[0].record_index, 2)
 
@@ -117,6 +117,42 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(import_results(data, mapping, self.images).detections[self.images[0]][0].score, 85)
         result = import_results(data, replace(mapping, score_field=None), self.images)
         self.assertIsNone(result.detections[self.images[0]][0].score)
+
+    def test_confidence_order_is_stable_per_image_across_records(self):
+        data = {"results": [
+            {"name": "0001.jpg", "objects": [{"bbox": [0, 0, 2, 3], "score": .1}]},
+            {"name": "0002.png", "objects": [
+                {"bbox": [0, 0, 2, 3], "score": .2}, {"bbox": [0, 0, 2, 3], "score": .8}]},
+            {"name": "0001.jpg", "objects": [
+                {"bbox": [0, 0, 2, 3], "score": .9}, {"bbox": [0, 0, 2, 3], "score": .9}]}]}
+        original = json.dumps(data)
+        result = import_results(data, guess_mapping(data, Collection("/results")), self.images)
+        first = result.detections[self.images[0]]
+        self.assertEqual([target.score for target in first], [.9, .9, .1])
+        self.assertEqual([(target.record_index, target.target_index) for target in first], [(3, 1), (3, 2), (1, 1)])
+        self.assertEqual([target.score for target in result.detections[self.images[1]]], [.8, .2])
+        self.assertIs(first[0].raw, data["results"][2]["objects"][0])
+        self.assertEqual(json.dumps(data), original)
+
+    def test_no_confidence_keeps_original_json_order(self):
+        data = {"0001.jpg": [{"bbox": [5, 0, 10, 10]}, {"bbox": [0, 0, 4, 10]}]}
+        result = import_results(data, guess_mapping(data, Collection("", "keyed")), self.images)
+        self.assertEqual([target.target_index for target in result.detections[self.images[0]]], [1, 2])
+
+    def test_missing_confidence_follows_numeric_scores_without_reordering_ties(self):
+        targets = [Detection((0, 0, 1, 1), None, score, 1, i + 1, {})
+                   for i, score in enumerate((None, .4, .9, .9, None, 0, -.2))]
+        sort_detections(targets)
+        self.assertEqual([target.target_index for target in targets], [3, 4, 2, 6, 7, 1, 5])
+
+    def test_missing_and_null_scores_remain_imported_but_invalid_scores_are_reported(self):
+        data = [{"name": "0001.jpg", "bbox": [0, 0, 1, 1], **fields}
+                for fields in ({}, {"score": 0}, {"score": .9}, {"score": None},
+                               {"score": .9}, {"score": -.2}, {"score": "invalid"})]
+        result = import_results(data, guess_mapping(data, Collection("")), self.images)
+        self.assertEqual([target.record_index for target in result.detections[self.images[0]]], [3, 5, 2, 6, 1, 4])
+        self.assertEqual(result.matched_target_count, 6)
+        self.assertEqual(result.issue_counts["目标数据无效"], 1)
 
     def test_entirely_empty_results_can_be_imported_without_box_fields(self):
         data = [{"path": "0001.jpg", "detections": []}]
