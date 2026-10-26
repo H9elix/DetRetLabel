@@ -132,6 +132,7 @@ class ImageView(QGraphicsView):
         self.active_index = 0
         self.show_all_targets = False
         self.show_noncurrent_labels = False
+        self.retained_algorithm_indices: set[int] = set()
         self.show_ground_truth = False
         self.selected_gt_index = 0
         self.selected_manual_index = 0
@@ -141,6 +142,7 @@ class ImageView(QGraphicsView):
         self.message("选择图片文件夹，开始准备测试集")
 
     def message(self, message: str) -> None:
+        self.retained_algorithm_indices.clear()
         self.selected_gt_index = self.same_gt_index = self.mismatch_gt_index = 0
         self.selected_manual_index = 0
         self.set_draw_mode(False)
@@ -157,6 +159,7 @@ class ImageView(QGraphicsView):
         self.dimensions = None
 
     def show_image(self, path: Path) -> str | None:
+        self.retained_algorithm_indices.clear()
         self.selected_gt_index = self.same_gt_index = self.mismatch_gt_index = 0
         self.selected_manual_index = 0
         self.set_draw_mode(False)
@@ -229,14 +232,18 @@ class ImageView(QGraphicsView):
             self.overlay_items[role] = items
             self.label_items[role] = labels
         self.set_current_target(self.active_role, self.active_index, show_all=self.show_all_targets,
-                                show_noncurrent_labels=self.show_noncurrent_labels, show_ground_truth=self.show_ground_truth)
+                                show_noncurrent_labels=self.show_noncurrent_labels,
+                                retained_algorithm_indices=self.retained_algorithm_indices,
+                                show_ground_truth=self.show_ground_truth)
 
     def set_current_target(self, role: str | None, index: int, *, show_all: bool = False,
-                           show_noncurrent_labels: bool = False, show_ground_truth: bool = False) -> None:
+                           show_noncurrent_labels: bool = False, show_ground_truth: bool = False,
+                           retained_algorithm_indices: set[int] | None = None) -> None:
         self.active_role = role
         self.active_index = index
         self.show_all_targets = show_all
         self.show_noncurrent_labels = show_all and show_noncurrent_labels
+        self.retained_algorithm_indices = set(retained_algorithm_indices or ())
         self.show_ground_truth = show_ground_truth
         for source_role, items in self.overlay_items.items():
             for number, item in enumerate(items, 1):
@@ -268,14 +275,16 @@ class ImageView(QGraphicsView):
         self.selected_manual_index = manual
         self.mismatch_gt_color = color
         self.set_current_target(self.active_role, self.active_index, show_all=self.show_all_targets,
-            show_noncurrent_labels=self.show_noncurrent_labels, show_ground_truth=self.show_ground_truth)
+            show_noncurrent_labels=self.show_noncurrent_labels, show_ground_truth=self.show_ground_truth,
+            retained_algorithm_indices=self.retained_algorithm_indices)
 
     def _target_visible(self, role: str, index: int, *, label: bool = False) -> bool:
         if role == "ground_truth":
             return self.show_ground_truth or index in (self.selected_gt_index, self.same_gt_index, self.mismatch_gt_index)
         if role == "algorithm":
             selected = role == self.active_role and index == self.active_index
-            return selected or (self.show_all_targets and (not label or self.show_noncurrent_labels))
+            return (selected or index in self.retained_algorithm_indices or
+                    (self.show_all_targets and (not label or self.show_noncurrent_labels)))
         return role == "manual"
 
     def set_draw_mode(self, enabled: bool) -> None:

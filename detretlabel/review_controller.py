@@ -269,6 +269,8 @@ class ReviewController(QObject):
         self.w.image_view.set_current_target(target.role if target else None, row,
             show_all=self.panel.show_all_targets.isChecked() or bool(self._hold_sources),
             show_noncurrent_labels=self.panel.show_noncurrent_labels.isChecked(),
+            retained_algorithm_indices={i for i, item in enumerate(self.role_targets("algorithm"), 1)
+                if self.target_completed(item)} if self.panel.keep_reviewed_targets.isChecked() else set(),
             show_ground_truth=self.panel.gt_button.isChecked())
         self.gt_reference.update()
 

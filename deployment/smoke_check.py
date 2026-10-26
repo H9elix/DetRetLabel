@@ -128,7 +128,16 @@ def run(destination: str) -> int:
         check(review.current.category == "person" and review.current.target_index == 2,
               "Confidence ordering preserves original JSON identity")
         first_id = review.current.id
+        check(window.annotation_panel.keep_reviewed_targets.isChecked(), "Retain reviewed targets enabled by default")
         review.choose_status("true_positive")
+        view = window.image_view
+        check(all(item.isVisible() for item in view.overlay_items["algorithm"]) and
+              all(item.isVisible() for item in view.label_items["algorithm"]), "Reviewed box and label remain visible after advancing")
+        window.annotation_panel.keep_reviewed_targets.setChecked(False)
+        check(not view.overlay_items["algorithm"][0].isVisible() and not view.label_items["algorithm"][0].isVisible(),
+              "Disabling retention hides noncurrent reviewed target")
+        window.annotation_panel.keep_reviewed_targets.setChecked(True)
+        check(all(item.isVisible() for item in view.label_items["algorithm"]), "Re-enabling retention restores reviewed labels")
         review.choose_status("false_positive")
         review.choose_reason("种类检错")
         check(review.phase == "manual" and review.algorithm_ready(), "03 decisions and automatic 04 transition")

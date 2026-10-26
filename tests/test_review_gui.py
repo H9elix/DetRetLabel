@@ -786,6 +786,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.import_source(gt, "ground_truth")
         panel, view = self.w.annotation_panel, self.w.image_view
         self.assertFalse(panel.show_all_targets.isChecked())
+        self.assertTrue(panel.keep_reviewed_targets.isChecked())
         self.assertFalse(panel.show_noncurrent_labels.isChecked())
         self.assertTrue(panel.show_noncurrent_labels.isEnabled())
         self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, False])
@@ -834,6 +835,7 @@ class ReviewGuiTests(unittest.TestCase):
 
     def test_noncurrent_label_visibility_ignores_review_status(self):
         panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
+        panel.keep_reviewed_targets.setChecked(False)
         panel.show_all_targets.setChecked(True)
         first = review.current.id
         self.key(Qt.Key.Key_1)
@@ -855,6 +857,124 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [False, True])
         panel.show_noncurrent_labels.setChecked(True)
         self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [True, True])
+
+    def test_keep_reviewed_overlays_are_independent_of_all_and_noncurrent_switches(self):
+        data = copy.deepcopy(self.data)
+        data["results"][0]["detections"].append(
+            {"bbox": [360, 60, 430, 180], "type": "dog", "conf": .7})
+        self.import_source(data)
+        panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
+        view.auto_fit = False
+        view.scale(1.2, 1.2)
+        zoom = view.transform()
+        self.key(Qt.Key.Key_1)
+        self.assertTrue(panel.keep_reviewed_targets.isChecked())
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, True, False])
+        panel.keep_reviewed_targets.click()
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, True, False])
+        panel.keep_reviewed_targets.click()
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, True, False])
+        self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [True, True, False])
+        QTest.keyPress(view, Qt.Key.Key_H)
+        self.assertTrue(all(item.isVisible() for item in view.overlay_items["algorithm"]))
+        self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [True, True, False])
+        QTest.keyRelease(view, Qt.Key.Key_H)
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, True, False])
+        panel.show_all_targets.setChecked(True)
+        self.assertTrue(all(item.isVisible() for item in view.overlay_items["algorithm"]))
+        self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [True, True, False])
+        panel.show_noncurrent_labels.setChecked(True)
+        self.assertTrue(all(item.isVisible() for item in view.label_items["algorithm"]))
+        panel.show_all_targets.setChecked(False)
+        panel.show_noncurrent_labels.setChecked(False)
+        review.clicked_target("algorithm", 3)
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, False, True])
+        self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [True, False, True])
+        panel.keep_reviewed_targets.click()
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, False, True])
+        self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [False, False, True])
+        self.assertEqual(view.transform(), zoom)
+
+    def test_retained_targets_require_finished_review_and_follow_clear_and_undo(self):
+        panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
+        panel.keep_reviewed_targets.setChecked(True)
+        first, second = review.queue()
+        self.key(Qt.Key.Key_2)
+        self.key(Qt.Key.Key_Down)
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, True])
+        panel.note.setFocus()
+        QTest.keyClicks(panel.note, "note only")
+        review.flush_note()
+        review.select(first.id)
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [True, False])
+        panel.confirm_button.click()
+        self.assertTrue(review.target_completed(first))
+        self.assertEqual(review.current.id, second.id)
+        self.assertTrue(all(item.isVisible() for item in view.label_items["algorithm"]))
+        review.select(first.id)
+        panel.clear_button.click()
+        review.select(second.id)
+        self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, True])
+        panel.undo_button.click()
+        review.select(second.id)
+        self.assertTrue(all(item.isVisible() for item in view.label_items["algorithm"]))
+        with patch("detretlabel.review_controller.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            panel.clear_image_button.click()
+        self.assertTrue(panel.keep_reviewed_targets.isChecked())
+        self.assertEqual(sum(item.isVisible() for item in view.overlay_items["algorithm"]), 1)
+        self.assertEqual(sum(item.isVisible() for item in view.label_items["algorithm"]), 1)
+
+    def test_retained_overlays_use_saved_reviews_and_sorted_rows_for_each_image(self):
+        data = copy.deepcopy(self.data)
+        data["results"][0]["detections"][0]["conf"] = .2
+        self.import_source(data)
+        panel, review = self.w.annotation_panel, self.w.review
+        panel.keep_reviewed_targets.setChecked(True)
+        review.select(review.queue()[1].id)
+        self.key(Qt.Key.Key_1)
+        self.assertEqual(review.current.category, "car")
+        self.assertTrue(review.save(explicit=True))
+        self.w.move_image(1)
+        self.assertEqual(self.w.image_view.retained_algorithm_indices, set())
+        self.w.move_image(-1)
+        self.assertEqual(self.w.image_view.retained_algorithm_indices, {2})
+        self.assertTrue(all(item.isVisible() for item in self.w.image_view.label_items["algorithm"]))
+        self.w.close()
+        self.w = MainWindow(self.settings)
+        self.w.show()
+        self.w.scan_folder(self.folder)
+        self.wait()
+        self.import_source(data)
+        self.w.annotation_panel.keep_reviewed_targets.setChecked(True)
+        self.assertEqual(self.w.review.current.category, "car")
+        self.assertEqual(self.w.image_view.retained_algorithm_indices, {2})
+        self.assertTrue(all(item.isVisible() for item in self.w.image_view.label_items["algorithm"]))
+
+    def test_retained_labels_honor_source_style_and_survive_reference_and_review_updates(self):
+        self.matching_gt()
+        self.wait_matches()
+        panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
+        panel.keep_reviewed_targets.setChecked(True)
+        self.key(Qt.Key.Key_1)
+        self.wait_matches()
+        review.gt_reference.inspect(1, "ground_truth")
+        self.assertTrue(all(item.isVisible() for item in view.label_items["algorithm"]))
+        self.assertEqual([item.isVisible() for item in view.overlay_items["ground_truth"]], [True, False, False, False])
+        style = replace(self.w.box_styles["algorithm"], show_category=False, show_score=False)
+        with patch("detretlabel.app.BoxStyleDialog") as dialog:
+            dialog.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            dialog.return_value.selected_style.return_value = style
+            self.w.source_panels["algorithm"].box_style.click()
+        self.assertFalse(view.label_items["algorithm"])
+        self.assertTrue(all(item.isVisible() for item in view.overlay_items["algorithm"]))
+        review.all_positive()
+        self.assertEqual(review.phase, "manual")
+        panel.show_all_targets.setChecked(False)
+        self.assertTrue(all(item.isVisible() for item in view.overlay_items["algorithm"]))
+        self.assertFalse(panel.gt_button.isChecked())
+        self.assertFalse(any(item.isVisible() for item in view.overlay_items["ground_truth"]))
+        panel.keep_reviewed_targets.setChecked(False)
+        self.assertFalse(any(item.isVisible() for item in view.overlay_items["algorithm"]))
 
     def test_gt_toggle_is_independent_and_shows_or_hides_all_gt_together(self):
         panel, view, review = self.w.annotation_panel, self.w.image_view, self.w.review
