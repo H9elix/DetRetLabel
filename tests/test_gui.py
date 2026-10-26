@@ -11,10 +11,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QPoint, QSettings, Qt, QUrl
 from PySide6.QtGui import QImage, QColor, QFontDatabase, QTextDocument
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QGraphicsItem, QTableWidget
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QGraphicsItem, QHeaderView, QTableWidget
 
 from detretlabel.app import MainWindow, STYLE
 from detretlabel.core import Collection, import_results, guess_mapping
@@ -227,6 +227,100 @@ class GuiTests(unittest.TestCase):
             dialog = MappingDialog(data, "empty.json", self.window)
             dialog.accept()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_four_coordinate_fields_do_not_overlap_after_style_resize_and_mode_switches(self):
+        dialog = MappingDialog(self.data(), "test.json", self.window)
+        dialog.show()
+        for size in ((820, 780), (660, 640)):
+            dialog.resize(*size)
+            for mode in (1, 0, 1):
+                dialog.box_mode.setCurrentIndex(mode)
+                for box_format in ("xyxy", "xywh"):
+                    dialog.format_combo.setCurrentIndex(dialog.format_combo.findData(box_format))
+                    self.app.processEvents()
+                    page = dialog.box_stack.currentWidget()
+                    fields = dialog.coordinate_combos if mode else [dialog.box_combo]
+                    self.assertGreaterEqual(dialog.box_stack.height(), page.minimumSizeHint().height())
+                    for control in fields:
+                        bottom = control.mapTo(dialog, QPoint(0, control.height())).y()
+                        self.assertLessEqual(bottom, dialog.category_combo.mapTo(dialog, QPoint()).y())
+                    self.assertLess(dialog.category_combo.mapTo(dialog, QPoint()).y(),
+                                    dialog.score_combo.mapTo(dialog, QPoint()).y())
+        dialog.close()
+
+    def test_normalized_mapping_imports_real_image_dimensions_and_survives_rescan(self):
+        self.window.scan_folder(self.folder)
+        self.wait_task()
+        data = [{"name": "0001.jpg", "width": 123, "height": 456,
+                 "bbox": [.1, .2, .4, .4], "type": "car", "score": .9}]
+        def accept_normalized(dialog):
+            dialog.normalized_coordinates.setChecked(True)
+            dialog.format_combo.setCurrentIndex(dialog.format_combo.findData("xywh"))
+            return QDialog.DialogCode.Accepted
+        with patch.object(MappingDialog, "exec", accept_normalized):
+            self.window._map_document(data, self.folder / "normalized.json")
+        self.wait_task()
+        source = self.window.sources["algorithm"]
+        self.assertTrue(source.mapping.normalized)
+        target = source.result.detections[self.folder / "0001.jpg"][0]
+        for actual, expected in zip(target.box, (64, 80, 320, 240)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(self.window.image_view.overlay_items["algorithm"][0].rect().width(), 256)
+        self.assertEqual(self.window.target_tables["algorithm"].item(0, 3).text(), "64")
+        dialog = MappingDialog(data, "normalized.json", self.window, source.mapping)
+        self.assertTrue(dialog.normalized_coordinates.isChecked())
+        dialog.format_combo.setCurrentIndex(dialog.format_combo.findData("xyxy"))
+        self.assertTrue(dialog.mapping().normalized)
+        signature = source.signature
+        self.window.scan_folder(self.folder)
+        self.wait_task()
+        self.assertEqual(source.signature, signature)
+        self.assertEqual(source.result.detections[self.folder / "0001.jpg"][0].box, target.box)
+
+    def test_normalized_gt_mapping_is_independent_and_matches_pixel_algorithm(self):
+        self.load_source()
+        data = [{"name": "0001.jpg", "xmin": 10 / 640, "ymin": 20 / 400,
+                 "xmax": 100 / 640, "ymax": 200 / 400, "type": "person"}]
+        def accept_normalized(dialog):
+            dialog.normalized_coordinates.setChecked(True)
+            return QDialog.DialogCode.Accepted
+        with patch.object(MappingDialog, "exec", accept_normalized):
+            self.window._map_document(data, self.folder / "normalized-gt.json", role="ground_truth")
+        self.wait_task()
+        reference = self.window.review.gt_reference
+        deadline = time.monotonic() + 5
+        while (reference.timer.isActive() or reference._job is not None or reference._pending is not None) and time.monotonic() < deadline:
+            self.app.processEvents()
+            QTest.qWait(5)
+        self.assertFalse(self.window.sources["algorithm"].mapping.normalized)
+        self.assertTrue(self.window.sources["ground_truth"].mapping.normalized)
+        self.assertEqual(self.window.sources["ground_truth"].result.detections[self.folder / "0001.jpg"][0].box,
+                         (10, 20, 100, 200))
+        self.assertIsNotNone(reference.result)
+        self.assertAlmostEqual(reference.result.same_iou, 1)
+
+    def test_refresh_loads_preview_once_and_restores_automatic_column_sizes(self):
+        with patch.object(self.window, "_selection_changed", wraps=self.window._selection_changed) as selected:
+            self.window.scan_folder(self.folder)
+            self.wait_task()
+        self.assertEqual(selected.call_count, 1)
+        self.window.search.setText("0001")
+        with patch.object(self.window, "_selection_changed", wraps=self.window._selection_changed) as selected:
+            self.load_source()
+        self.assertEqual(selected.call_count, 1)
+        self.assertEqual(self.window.current_image().name, "0001.jpg")
+        self.assertTrue(self.window.image_table.isRowHidden(1))
+        header = self.window.image_table.horizontalHeader()
+        for column in (1, 2, 3):
+            self.assertEqual(header.sectionResizeMode(column), QHeaderView.ResizeMode.ResizeToContents)
+        self.assertGreater(header.sectionSize(3), header.sectionSize(1))
+
+    def test_new_gt_overlay_default_is_on_and_explicit_off_preference_is_restored(self):
+        self.assertTrue(self.window.auto_gt_overlay.isChecked())
+        self.window.auto_gt_overlay.setChecked(False)
+        reopened = MainWindow(self.window.settings)
+        self.assertFalse(reopened.auto_gt_overlay.isChecked())
+        reopened.close()
 
     def test_import_workflow_and_rematching_when_format_changes(self):
         self.window.scan_folder(self.folder)
@@ -481,7 +575,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.box_styles, previous)
 
     def test_styles_can_be_set_before_import_and_restored_at_restart(self):
-        styles = {"algorithm": BoxStyle("#a128e8", "dash_dot"), "ground_truth": BoxStyle("#e81343", "dot")}
+        styles = {"algorithm": BoxStyle("#a128e8", "dash_dot"), "ground_truth": BoxStyle("#e81343", "dot", show_score=False)}
         for role, style in styles.items():
             with patch("detretlabel.app.BoxStyleDialog") as dialog:
                 dialog.return_value.exec.return_value = QDialog.DialogCode.Accepted
@@ -575,6 +669,36 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(restored.box_styles["algorithm"], style)
         self.assertEqual(restored.box_styles["ground_truth"], DEFAULT_BOX_STYLES["ground_truth"])
         restored.close()
+
+    def test_gt_overlay_labels_never_show_scores_even_with_legacy_style_enabled(self):
+        data = self.data()
+        self.load_source(data=data)
+        self.window.box_styles["ground_truth"] = replace(DEFAULT_BOX_STYLES["ground_truth"], show_score=True)
+        self.load_source("ground_truth", data)
+        view = self.window.image_view
+        self.window.annotation_panel.gt_button.setChecked(True)
+        self.assertEqual(view.label_items["algorithm"][0].full_text, "person · 0.95")
+        self.assertEqual(view.label_items["ground_truth"][0].full_text, "person")
+        self.assertNotIn("置信度", view.label_items["ground_truth"][0].toolTip())
+        self.assertEqual(self.window.sources["ground_truth"].result.detections[self.folder / "0001.jpg"][0].score, .95)
+        self.window.box_styles["ground_truth"] = replace(self.window.box_styles["ground_truth"], show_category=False)
+        self.window._update_overlays()
+        self.assertFalse(view.label_items["ground_truth"])
+        self.assertTrue(view.overlay_items["ground_truth"][0].isVisible())
+
+    def test_gt_style_dialog_and_restored_preferences_cannot_enable_score_labels(self):
+        self.window.settings.setValue("box_styles/ground_truth/show_score", True)
+        reopened = MainWindow(self.window.settings)
+        self.assertFalse(reopened.box_styles["ground_truth"].show_score)
+        self.assertTrue(reopened.box_styles["algorithm"].show_score)
+        reopened.close()
+        legacy = replace(DEFAULT_BOX_STYLES["ground_truth"], show_score=True)
+        dialog = BoxStyleDialog("Ground Truth", legacy, legacy, self.window, allow_score=False)
+        self.assertNotIn("show_score", dialog.label_checks)
+        self.assertFalse(dialog.selected_style().show_score)
+        self.assertFalse(dialog.preview.box_style.show_score)
+        dialog.buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).click()
+        self.assertFalse(dialog.selected_style().show_score)
 
     def test_disabling_all_text_keeps_rectangles_and_current_zoom(self):
         self.load_source()

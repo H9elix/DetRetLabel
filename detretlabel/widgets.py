@@ -1,11 +1,31 @@
 """Compact data preparation controls shared by both JSON sources."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
+    QFrame, QHeaderView, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
+
+
+@contextmanager
+def batch_table_updates(table):
+    """Defer content-based column sizing until a whole batch is populated."""
+    header = table.horizontalHeader()
+    automatic = [column for column in range(table.columnCount())
+                 if header.sectionResizeMode(column) == QHeaderView.ResizeMode.ResizeToContents]
+    updates_enabled = table.updatesEnabled()
+    table.setUpdatesEnabled(False)
+    for column in automatic:
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+    try:
+        yield
+    finally:
+        for column in automatic:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        table.setUpdatesEnabled(updates_enabled)
 
 
 class ElidedLabel(QLabel):

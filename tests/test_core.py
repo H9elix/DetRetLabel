@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 from detretlabel.core import (
     Collection, FieldMapping, basename, discover_collections, fields, guess_mapping,
@@ -45,6 +46,63 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(result.matched_target_count, 1)
         self.assertEqual(len(result.referenced), 2)
         self.assertEqual(result.detections[self.images[0]][0].category, 0)
+
+    def test_normalized_arrays_and_independent_fields_in_both_formats(self):
+        for box_format, values, names in (("xyxy", [.1, .2, .5, .6], ("xmin", "ymin", "xmax", "ymax")),
+                                          ("xywh", [.1, .2, .4, .4], ("x", "y", "w", "h"))):
+            for independent in (False, True):
+                with self.subTest(format=box_format, independent=independent):
+                    raw = dict(zip(names, values)) if independent else {"bbox": values}
+                    raw.update(name="0001.jpg", type="car", score=.9)
+                    original = json.dumps(raw)
+                    mapping = replace(guess_mapping([raw], Collection("")), box_format=box_format, normalized=True)
+                    result = import_results([raw], mapping, self.images, image_size_loader=lambda path: (640, 400))
+                    target = result.detections[self.images[0]][0]
+                    for actual, expected in zip(target.box, (64, 80, 320, 240)):
+                        self.assertAlmostEqual(actual, expected)
+                    self.assertIs(target.raw, raw)
+                    self.assertEqual(json.dumps(raw), original)
+
+    def test_normalization_reads_each_matched_image_size_once_and_uses_its_dimensions(self):
+        data = [{"name": name, "bbox": [.1, .2, .5, .6]} for name in ("0001.jpg", "0001.jpg", "0002.png")]
+        mapping = replace(guess_mapping(data, Collection("")), normalized=True)
+        sizes = {self.images[0]: (640, 400), self.images[1]: (200, 100)}
+        loader = Mock(side_effect=sizes.__getitem__)
+        result = import_results(data, mapping, self.images, image_size_loader=loader)
+        self.assertEqual(loader.call_count, 2)
+        self.assertEqual(result.detections[self.images[1]][0].box, (20, 20, 100, 60))
+        self.assertEqual(result.matched_target_count, 3)
+        loader.reset_mock()
+        import_results(data, replace(mapping, normalized=False), self.images, image_size_loader=loader)
+        loader.assert_not_called()
+
+    def test_normalized_import_reports_size_failures_without_dropping_other_images(self):
+        data = [{"name": name, "bbox": [.1, .2, .5, .6]} for name in
+                ("0001.jpg", "0001.jpg", "0002.png", "missing.jpg")]
+        def dimensions(path):
+            if path == self.images[0]:
+                raise ValueError("图片损坏")
+            return 200, 100
+        loader = Mock(side_effect=dimensions)
+        mapping = replace(guess_mapping(data, Collection("")), normalized=True)
+        result = import_results(data, mapping, self.images, image_size_loader=loader)
+        self.assertEqual(loader.call_count, 2)
+        self.assertEqual(result.issue_counts["图片尺寸无效"], 1)
+        self.assertEqual(result.issue_counts["图片未匹配"], 1)
+        self.assertEqual(result.matched_target_count, 1)
+        self.assertIn("图片损坏", result.issues[0].message)
+        self.assertEqual(result.detections[self.images[0]], [])
+
+    def test_normalized_empty_targets_need_no_size_and_invalid_sizes_are_rejected(self):
+        data = [{"name": "0001.jpg", "detections": []}]
+        loader = Mock()
+        mapping = replace(guess_mapping(data, Collection("")), normalized=True)
+        self.assertEqual(import_results(data, mapping, self.images, image_size_loader=loader).issues, [])
+        loader.assert_not_called()
+        mapping = FieldMapping(Collection(""), "/name", box_field="/bbox", normalized=True)
+        for dimensions in (None, (0, 10), (10, -1), (True, 10), (float('inf'), 10)):
+            with self.subTest(dimensions=dimensions), self.assertRaises(ValueError):
+                parse_detection({"bbox": [.1, .2, .5, .6]}, mapping, 1, 1, image_size=dimensions)
 
     def test_keyed_objects_and_single_image(self):
         record = {"path": "0001.jpg", "detections": [{"xywh": [1, 2, 3, 4]}]}

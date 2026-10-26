@@ -93,7 +93,7 @@ class BoxStyle:
 
 DEFAULT_BOX_STYLES = {
     "algorithm": BoxStyle("#ff0000", "solid"),
-    "ground_truth": BoxStyle("#00ff00", "dash"),
+    "ground_truth": BoxStyle("#00ff00", "dash", show_score=False),
 }
 
 
@@ -144,8 +144,10 @@ class BoxStylePreview(QWidget):
 
 
 class BoxStyleDialog(QDialog):
-    def __init__(self, title: str, current: BoxStyle, default: BoxStyle, parent: QWidget | None = None):
+    def __init__(self, title: str, current: BoxStyle, default: BoxStyle, parent: QWidget | None = None,
+                 *, allow_score: bool = True):
         super().__init__(parent)
+        self.allow_score = allow_score
         self.setWindowTitle(f"{title} · 框与文字显示")
         self.setMinimumWidth(430)
         self.default_style = default
@@ -167,13 +169,16 @@ class BoxStyleDialog(QDialog):
         labels_group = QGroupBox("图片上显示的信息")
         labels_layout = QGridLayout(labels_group)
         self.label_checks: dict[str, QCheckBox] = {}
-        for index, (name, text) in enumerate(LABEL_FIELDS.items()):
+        fields = [(name, text) for name, text in LABEL_FIELDS.items() if name != "show_score" or allow_score]
+        for index, (name, text) in enumerate(fields):
             check = QCheckBox(text)
             check.setChecked(getattr(current, name))
             self.label_checks[name] = check
             labels_layout.addWidget(check, index // 2, index % 2)
         layout.addWidget(labels_group)
-        label_note = QLabel("未映射的字段自动略过；全部取消时只显示目标框。")
+        label_note = QLabel(("GT 标签不显示置信度。" if not allow_score else "") +
+                            "未映射的字段自动略过；全部取消时只显示目标框。")
+        label_note.setWordWrap(True)
         label_note.setObjectName("muted")
         layout.addWidget(label_note)
         layout.addWidget(QLabel("样式预览（浅色 / 深色背景）"))
@@ -198,8 +203,11 @@ class BoxStyleDialog(QDialog):
         self._refresh_preview()
 
     def selected_style(self) -> BoxStyle:
+        fields = {name: check.isChecked() for name, check in self.label_checks.items()}
+        if not self.allow_score:
+            fields["show_score"] = False
         return BoxStyle(self.color.name(), self.line_combo.currentData(),
-                        **{name: check.isChecked() for name, check in self.label_checks.items()})
+                        **fields)
 
     def choose_color(self) -> None:
         color = QColorDialog.getColor(self.color, self, "选择目标框颜色")

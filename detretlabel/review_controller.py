@@ -15,6 +15,7 @@ from .annotation import AnnotationStore, ReviewConfig, ReviewTarget, STATUSES, s
 from .annotation_panel import display_key
 from .review_report import build_report, write_excel
 from .gt_reference import GTReferenceController
+from .widgets import batch_table_updates
 
 
 class ReviewController(QObject):
@@ -35,6 +36,7 @@ class ReviewController(QObject):
         self._hold_key: int | None = None
         self._selecting = False
         self._note_pending = False
+        self._all_progress_dirty = True
         self.gt_reference = GTReferenceController(self)
         self.config = ReviewConfig()
         self.shortcuts = {}
@@ -124,6 +126,7 @@ class ReviewController(QObject):
         return [t for t in self.by_image.get(path or self.w.current_image(), []) if t.role == role]
 
     def rebuild(self) -> None:
+        self._all_progress_dirty = True
         self.flush_note()
         self.flush_reason_draft()
         if self.w.folder and self.store.folder != self.w.folder:
@@ -180,12 +183,13 @@ class ReviewController(QObject):
         targets = self.role_targets("manual")
         table = self.w.target_tables["manual"]
         table.blockSignals(True)
-        table.setRowCount(len(targets))
-        for row, target in enumerate(targets):
-            values = [str(row + 1), str(target.category) if target.category is not None else "—", "—",
-                      *(f"{v:g}" for v in target.box)]
-            for col, value in enumerate(values):
-                table.setItem(row, col, QTableWidgetItem(value))
+        with batch_table_updates(table):
+            table.setRowCount(len(targets))
+            for row, target in enumerate(targets):
+                values = [str(row + 1), str(target.category) if target.category is not None else "—", "—",
+                          *(f"{v:g}" for v in target.box)]
+                for col, value in enumerate(values):
+                    table.setItem(row, col, QTableWidgetItem(value))
         table.blockSignals(False)
         self.w.set_target_count("manual", len(targets))
 
@@ -335,28 +339,38 @@ class ReviewController(QObject):
 
     def update_rows(self) -> None:
         for role, table in self.w.target_tables.items():
-            for row, target in enumerate(self.role_targets(role)):
-                record = self.store.get(target.id) or {}
-                status = "仅参考" if role == "ground_truth" else STATUSES.get(record.get("status"), "未标注")
-                if role == "algorithm" and record.get("status") == "false_negative":
-                    status = "旧漏检，待重审"
-                elif role == "algorithm" and record.get("reason_pending"):
-                    status += " · 原因待确认"
-                for col, text in ((7, status), (8, "" if role == "ground_truth" else record.get("reason", ""))):
-                    item = QTableWidgetItem(text)
-                    item.setToolTip(record.get("note", "") if col == 7 else text)
-                    table.setItem(row, col, item)
-        for row, path in enumerate(self.w.images):
-            queue = self.role_targets("algorithm", path)
-            done = sum(self.target_completed(t) for t in queue)
-            completed = self.review_completed(path)
-            miss_completed = self.miss_review_completed(path)
-            state = "复核完成" if completed else "03未完成 · 04已完成" if miss_completed else "待复核"
-            item = QTableWidgetItem(f"{done}/{len(queue)} · " + state)
-            item.setToolTip(f"03 算法审核：{'已完成' if done == len(queue) else '未完成'}\n04 漏检复核：{'已完成' if miss_completed else '待复核'}\nGT 不参与决策。")
-            if completed:
-                item.setForeground(QColor("#13795b"))
-            self.w.image_table.setItem(row, 3, item)
+            with batch_table_updates(table):
+                for row, target in enumerate(self.role_targets(role)):
+                    record = self.store.get(target.id) or {}
+                    status = "仅参考" if role == "ground_truth" else STATUSES.get(record.get("status"), "未标注")
+                    if role == "algorithm" and record.get("status") == "false_negative":
+                        status = "旧漏检，待重审"
+                    elif role == "algorithm" and record.get("reason_pending"):
+                        status += " · 原因待确认"
+                    for col, text in ((7, status), (8, "" if role == "ground_truth" else record.get("reason", ""))):
+                        item = QTableWidgetItem(text)
+                        item.setToolTip(record.get("note", "") if col == 7 else text)
+                        table.setItem(row, col, item)
+        image = self.w.current_image()
+        rows = enumerate(self.w.images) if self._all_progress_dirty else (
+            ((self.w.image_table.currentRow(), image),) if image else ())
+        with batch_table_updates(self.w.image_table):
+            for row, path in rows:
+                queue = self.role_targets("algorithm", path)
+                done = sum(self.target_completed(t) for t in queue)
+                completed = self.review_completed(path)
+                miss_completed = self.miss_review_completed(path)
+                state = "复核完成" if completed else "03未完成 · 04已完成" if miss_completed else "待复核"
+                text = f"{done}/{len(queue)} · " + state
+                item = self.w.image_table.item(row, 3)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.w.image_table.setItem(row, 3, item)
+                if item.text() != text:
+                    item.setText(text)
+                item.setToolTip(f"03 算法审核：{'已完成' if done == len(queue) else '未完成'}\n04 漏检复核：{'已完成' if miss_completed else '待复核'}\nGT 不参与决策。")
+                item.setForeground(QColor("#13795b" if completed else "#24344b"))
+        self._all_progress_dirty = False
 
     def changed(self) -> None:
         self.save_timer.start()

@@ -61,7 +61,11 @@ class ReviewConfig:
 
 
 def source_signature(document: Any, mapping: FieldMapping) -> str:
-    payload = json.dumps([document, asdict(mapping)], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fields = asdict(mapping)
+    if not mapping.normalized:
+        # Pixel imports must retain the same fingerprint as versions before this option.
+        fields.pop("normalized", None)
+    payload = json.dumps([document, fields], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

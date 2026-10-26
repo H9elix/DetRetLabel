@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
 from PySide6.QtGui import QColor, QFontDatabase, QImage
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from detretlabel.app import MainWindow, STYLE
@@ -325,7 +325,9 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertFalse(table.selectedItems())
         self.assertIn("IoU", self.w.gt_match_status.full_text)
         self.assertEqual(view.overlay_items["algorithm"][0].pen().color().name(), "#ff0000")
-        self.assertFalse(self.w.auto_gt_overlay.isChecked())
+        self.assertTrue(self.w.auto_gt_overlay.isChecked())
+        self.assertEqual([item.isVisible() for item in view.overlay_items["ground_truth"]], [True, True, False, False])
+        self.w.auto_gt_overlay.setChecked(False)
         self.assertFalse(any(item.isVisible() for item in view.overlay_items["ground_truth"]))
         target_id = review.current.id
         self.w.auto_gt_overlay.setChecked(True)
@@ -347,6 +349,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertFalse(review.store.image_reviews)
 
     def test_manual_gt_selection_keeps_algorithm_target_reason_and_annotation(self):
+        self.w.auto_gt_overlay.setChecked(False)
         self.matching_gt()
         self.wait_matches()
         review, panel, view = self.w.review, self.w.annotation_panel, self.w.image_view
@@ -894,6 +897,21 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, False, True])
         self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [False, False, True])
         self.assertEqual(view.transform(), zoom)
+
+    def test_target_review_updates_only_its_image_progress_row(self):
+        table = self.w.image_table
+        changes = QSignalSpy(table.model().dataChanged)
+        self.key(Qt.Key.Key_1)
+        self.assertGreater(changes.count(), 0)
+        self.assertEqual({changes.at(i)[0].row() for i in range(changes.count())}, {0})
+        self.assertTrue(table.item(0, 3).text().startswith("1/2"))
+        self.w.move_image(1)
+        changes = QSignalSpy(table.model().dataChanged)
+        self.key(Qt.Key.Key_1)
+        self.assertGreater(changes.count(), 0)
+        self.assertEqual({changes.at(i)[0].row() for i in range(changes.count())}, {1})
+        self.assertTrue(table.item(0, 3).text().startswith("1/2"))
+        self.assertTrue(table.item(1, 3).text().startswith("1/1"))
 
     def test_retained_targets_require_finished_review_and_follow_clear_and_undo(self):
         panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
@@ -1468,7 +1486,7 @@ class ReviewGuiTests(unittest.TestCase):
         path.write_text("person:行人", encoding="utf-8")
         self.w.set_type_mapping("algorithm", TypeMapping.load(path))
         self.w.set_type_mapping("ground_truth", TypeMapping({"person": "参考行人"}))
-        self.assertEqual(self.w.image_view.label_items["ground_truth"][0].full_text, "参考行人 · 0.9")
+        self.assertEqual(self.w.image_view.label_items["ground_truth"][0].full_text, "参考行人")
         self.assertEqual(self.w.target_tables["ground_truth"].item(0, 1).text(), "参考行人")
         self.w.review.all_positive()
         self.w.review.store.set_image_review("01.jpg", self.w.review.algorithm_signature(), True)

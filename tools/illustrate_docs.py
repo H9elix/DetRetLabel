@@ -294,10 +294,11 @@ def main():
             fields = [(dialog.image_combo, "图片名字段", ["例如 /path 或 /name。", "只用最后的文件名匹配。"]),
                       (dialog.targets_combo, "每图的目标数组", ["例如 /detections。", "平铺格式选“记录本身”。"]),
                       (dialog.format_combo, "框坐标含义", ["xyxy：左上与右下。", "xywh：左上与宽高。"]),
+                      (dialog.normalized_coordinates, "是否归一化", ["比例坐标勾选；像素不勾选。", "按实际图片宽高换算。"]),
                       (dialog.score_combo, "种类与置信度", ["type / score 可选。", "没有置信度可不导入。"]),
                       (ok, "确认映射并导入", ["核对完成再点击。", "有问题可返回重新映射。"])]
             for i, (widget, title, lines) in enumerate(fields, 1):
-                right_note(figure, i, 862, 110 + (i - 1) * 155, title, lines, placed(region(widget, dialog), 20, 98))
+                right_note(figure, i, 862, 110 + (i - 1) * 128, title, lines, placed(region(widget, dialog), 20, 98))
             figure.save("03-field-mapping")
             dialog.close()
 

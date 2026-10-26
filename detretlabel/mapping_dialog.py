@@ -5,14 +5,24 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPlainTextEdit, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGroupBox,
+    QLabel, QLayout, QPlainTextEdit, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .core import (
     Collection, FieldMapping, discover_collections, fields, guess_mapping,
     read_pointer, sample_records, sample_targets, target_list_fields,
 )
+
+
+class CoordinateStack(QStackedWidget):
+    """Let the form reserve the styled height of the currently visible page."""
+
+    def sizeHint(self):
+        return self.currentWidget().sizeHint() if self.currentWidget() else super().sizeHint()
+
+    def minimumSizeHint(self):
+        return self.currentWidget().minimumSizeHint() if self.currentWidget() else super().minimumSizeHint()
 
 
 class MappingDialog(QDialog):
@@ -31,7 +41,16 @@ class MappingDialog(QDialog):
         if not self.collections:
             raise ValueError("没有找到可导入的记录。支持检测记录数组、包含图片名和目标数组的记录，或以图片名为键的字典。")
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        self.form_scroll = QScrollArea()
+        self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.form_scroll.setWidget(body)
+        outer.addWidget(self.form_scroll, 1)
         title = QLabel(f"将 JSON 字段链接到{source_kind}")
         title.setObjectName("dialogTitle")
         layout.addWidget(title)
@@ -65,7 +84,8 @@ class MappingDialog(QDialog):
         self.box_combo = QComboBox()
         self.coordinate_combos = [QComboBox() for _ in range(4)]
         self.coordinate_labels = [QLabel() for _ in range(4)]
-        self.box_stack = QStackedWidget()
+        self.box_stack = CoordinateStack()
+        self.box_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         array_widget = QWidget()
         array_form = QFormLayout(array_widget)
         array_form.setContentsMargins(0, 0, 0, 0)
@@ -79,12 +99,15 @@ class MappingDialog(QDialog):
         self.box_stack.addWidget(coords_widget)
         self.category_combo = QComboBox()
         self.score_combo = QComboBox()
+        self.normalized_coordinates = QCheckBox("归一化坐标（0–1，按图片宽高换算）")
+        self.normalized_coordinates.setToolTip("勾选后，横向坐标乘实际图片宽度，纵向坐标乘实际图片高度。适用于 xyxy 和左上角形式的 xywh；不自动推断。")
         target_form.addRow("坐标字段结构", self.box_mode)
         target_form.addRow("框坐标含义", self.format_combo)
+        target_form.addRow(self.normalized_coordinates)
         target_form.addRow(self.box_stack)
         target_form.addRow("目标种类（可选）", self.category_combo)
         target_form.addRow("置信度（可选）", self.score_combo)
-        warning = QLabel("普通 bbox 数组不能可靠推断 xyxy 或 xywh，默认 xyxy，请手动确认。仅支持像素坐标；置信度保留原始数值。")
+        warning = QLabel("请核对 xyxy / xywh 及是否归一化；不勾选时按像素坐标解释。xywh 的 x、y 是左上角，不能直接使用中心点坐标。置信度保留原始数值。")
         warning.setWordWrap(True)
         warning.setObjectName("warning")
         target_form.addRow(warning)
@@ -100,13 +123,18 @@ class MappingDialog(QDialog):
         self.error = QLabel()
         self.error.setWordWrap(True)
         self.error.setObjectName("error")
-        layout.addWidget(self.error)
+        outer.addWidget(self.error)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确认映射并导入")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
+        for combo in (self.collection_combo, self.image_combo, self.targets_combo, self.box_mode,
+                      self.format_combo, self.box_combo, *self.coordinate_combos, self.category_combo, self.score_combo):
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.box_mode.currentIndexChanged.connect(self._box_mode_changed)
         self.format_combo.currentIndexChanged.connect(self._coordinate_labels)
         self.collection_combo.currentIndexChanged.connect(self._collection_changed)
@@ -183,6 +211,7 @@ class MappingDialog(QDialog):
         self._apply_target_mapping(guess_mapping(self.document, collection, pointer))
 
     def _apply_target_mapping(self, mapping: FieldMapping) -> None:
+        self.normalized_coordinates.setChecked(mapping.normalized)
         self.box_mode.setCurrentIndex(1 if mapping.coordinates else 0)
         self._box_mode_changed()
         self._select(self.format_combo, mapping.box_format)
@@ -195,7 +224,7 @@ class MappingDialog(QDialog):
 
     def _box_mode_changed(self) -> None:
         self.box_stack.setCurrentIndex(self.box_mode.currentIndex())
-        self.box_stack.setFixedHeight(self.box_stack.currentWidget().sizeHint().height())
+        self.box_stack.updateGeometry()
 
     def _coordinate_labels(self) -> None:
         names = ("xmin", "ymin", "xmax", "ymax") if self.format_combo.currentData() == "xyxy" else ("x", "y", "width", "height")
@@ -208,7 +237,7 @@ class MappingDialog(QDialog):
             self.targets_combo.currentData(), self.format_combo.currentData(),
             self.box_combo.currentData() if self.box_mode.currentIndex() == 0 else None,
             tuple(combo.currentData() or "" for combo in self.coordinate_combos) if self.box_mode.currentIndex() else (),
-            self.category_combo.currentData(), self.score_combo.currentData(),
+            self.category_combo.currentData(), self.score_combo.currentData(), self.normalized_coordinates.isChecked(),
         )
 
     def accept(self) -> None:

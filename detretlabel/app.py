@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 import json
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from .core import IMAGE_EXTENSIONS, FieldMapping, ImportResult, import_results, load_json, scan_images
 from .mapping_dialog import MappingDialog
-from .widgets import CollapsibleSection, ElidedLabel, JsonSourcePanel, SettingsScrollArea
+from .widgets import CollapsibleSection, ElidedLabel, JsonSourcePanel, SettingsScrollArea, batch_table_updates
 from .box_style import BoxStyle, BoxStyleDialog, DEFAULT_BOX_STYLES, LABEL_FIELDS, LINE_STYLES
 from .overlay_label import BoxLabelItem
 from .annotation import AnnotationStore, source_signature
@@ -218,9 +219,10 @@ class ImageView(QGraphicsView):
                 description = category if category is not None else "未指定种类"
                 if category is not None and category != raw:
                     description += f"（原始种类：{raw}）"
-                item.setToolTip(f"{title} · 目标 {index}\n{description} · {score}")
+                detail = description if role == "ground_truth" else f"{description} · {score}"
+                item.setToolTip(f"{title} · 目标 {index}\n{detail}")
                 items.append(item)
-                text = style.label_text(category, target.score, index, title)
+                text = style.label_text(category, None if role == "ground_truth" else target.score, index, title)
                 visible_box = item.rect().intersected(QRectF(0, 0, width, height))
                 if text and not visible_box.isEmpty():
                     label = BoxLabelItem(text, style.color, self.overlay_root)
@@ -667,6 +669,8 @@ class MainWindow(QMainWindow):
                 self.settings.value(f"box_styles/{role}/color", default.color),
                 self.settings.value(f"box_styles/{role}/line_style", default.line_style), default,
                 {name: self.settings.value(f"box_styles/{role}/{name}", getattr(default, name)) for name in LABEL_FIELDS})
+            if role == "ground_truth":
+                self.box_styles[role] = replace(self.box_styles[role], show_score=False)
             try:
                 self.type_mappings[role] = TypeMapping.from_preferences(
                     self.settings.value(f"type_mappings/{role}/entries", "{}"),
@@ -675,7 +679,7 @@ class MainWindow(QMainWindow):
                 self.type_mappings[role] = TypeMapping()
         self._refresh_style_controls()
         self._refresh_type_mapping_controls()
-        self.auto_gt_overlay.setChecked(self.settings.value("review/auto_gt_overlay", False, type=bool))
+        self.auto_gt_overlay.setChecked(self.settings.value("review/auto_gt_overlay", True, type=bool))
 
     def _restore_filter_controls(self) -> None:
         for extension, check in self.formats.items():
@@ -758,7 +762,8 @@ class MainWindow(QMainWindow):
         old_store = self.review.store
         def scan():
             images = scan_images(folder, extensions, recursive)
-            return images, {role: import_results(document, mapping, images) if mapping else None
+            return images, {role: import_results(document, mapping, images,
+                                image_size_loader=self._image_dimensions) if mapping else None
                             for role, (document, mapping) in snapshots.items()}, (
                                 old_store if old_store.folder == folder.resolve() else AnnotationStore.load(folder))
         def done(value):
@@ -810,7 +815,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{state.title}已导入 · 匹配 {len(result.referenced)} 张图片 / "
                                          f"{result.matched_target_count} 个有效目标 · 问题 {len(result.issues)} 条")
         self._run(f"正在校验{state.title}并匹配图片…", lambda: (
-            import_results(document, mapping, images), source_signature(document, mapping)), done)
+            import_results(document, mapping, images, image_size_loader=self._image_dimensions),
+            source_signature(document, mapping)), done)
+
+    @staticmethod
+    def _image_dimensions(path: Path) -> tuple[int, int]:
+        # Called in the import worker; read header dimensions without decoding full images.
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(False)
+        size = reader.size()
+        if not size.isValid() or size.isEmpty():
+            raise ValueError(f"图片尺寸无法读取：{reader.errorString()}")
+        return size.width(), size.height()
 
     def remap_json(self, role: str = "algorithm") -> None:
         source = self.sources[role]
@@ -829,10 +845,13 @@ class MainWindow(QMainWindow):
     def configure_box_style(self, role: str) -> None:
         if self.busy:
             return
-        dialog = BoxStyleDialog(self.sources[role].title, self.box_styles[role], DEFAULT_BOX_STYLES[role], self)
+        dialog = BoxStyleDialog(self.sources[role].title, self.box_styles[role], DEFAULT_BOX_STYLES[role], self,
+                               allow_score=role != "ground_truth")
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         style = dialog.selected_style()
+        if role == "ground_truth":
+            style = replace(style, show_score=False)
         self.box_styles[role] = style
         self.settings.setValue(f"box_styles/{role}/color", style.color)
         self.settings.setValue(f"box_styles/{role}/line_style", style.line_style)
@@ -932,7 +951,7 @@ class MainWindow(QMainWindow):
         if result is None:
             return set(), set()
         return ({i.image_name.casefold() for i in result.issues if i.kind == "同名歧义"},
-                {i.image_name.casefold() for i in result.issues if i.kind in ("目标数据无效", "目标列表无效")})
+                {i.image_name.casefold() for i in result.issues if i.kind in ("目标数据无效", "目标列表无效", "图片尺寸无效")})
 
     def _refresh_source_panels(self) -> None:
         summaries = []
@@ -946,7 +965,8 @@ class MainWindow(QMainWindow):
             if source.mapping:
                 mapping = source.mapping
                 tooltip = (f"记录：{mapping.collection.pointer or '根节点'}\n图片字段：{mapping.image_field}\n"
-                           f"目标列表：{mapping.detections_field or '平铺记录'}\n框格式：{mapping.box_format}")
+                           f"目标列表：{mapping.detections_field or '平铺记录'}\n框格式：{mapping.box_format}"
+                           f"\n坐标单位：{'归一化，按图片宽高换算' if mapping.normalized else '像素'}")
             if result:
                 tooltip += (f"\n已关联 {len(result.referenced)} 张图片\n问题 {len(result.issues)} 条\n"
                             f"无有效关联 {len(self.images) - len(result.referenced)} 张图片")
@@ -960,36 +980,33 @@ class MainWindow(QMainWindow):
     def _refresh(self) -> None:
         self.review.rebuild()
         previous = self.current_image()
-        self.image_table.blockSignals(True)
-        self.image_table.setRowCount(len(self.images))
-        target_row = 0
-        issues_by_role = {role: self._issue_names(source.result) for role, source in self.sources.items()}
-        for row, image in enumerate(self.images):
-            relative = str(image.relative_to(self.folder)) if self.folder else image.name
-            item = QTableWidgetItem(relative)
-            item.setToolTip(str(image))
-            self.image_table.setItem(row, 0, item)
-            for column, role in enumerate(self.sources, 1):
-                count, state = self._source_image_info(role, image, issues_by_role[role])
-                item = QTableWidgetItem(count)
-                item.setToolTip(f"{self.sources[role].title}：{state}")
-                item.setForeground(QColor("#2563eb" if role == "algorithm" else "#13795b"))
-                self.image_table.setItem(row, column, item)
-            if image == previous:
-                target_row = row
-        self.image_table.blockSignals(False)
-        self._filter_table()
-        if self.images:
-            visible = [r for r in range(len(self.images)) if not self.image_table.isRowHidden(r)]
-            if target_row not in visible and visible:
-                target_row = visible[0]
-            if visible:
-                self.image_table.setCurrentCell(target_row, 0)
-                self._selection_changed()
-            else:
-                self.image_table.setCurrentCell(-1, -1)
-                self._selection_changed()
-        else:
+        with batch_table_updates(self.image_table):
+            blocked = self.image_table.blockSignals(True)
+            try:
+                self.image_table.setRowCount(len(self.images))
+                target_row = 0
+                issues_by_role = {role: self._issue_names(source.result) for role, source in self.sources.items()}
+                for row, image in enumerate(self.images):
+                    relative = str(image.relative_to(self.folder)) if self.folder else image.name
+                    item = QTableWidgetItem(relative)
+                    item.setToolTip(str(image))
+                    self.image_table.setItem(row, 0, item)
+                    for column, role in enumerate(self.sources, 1):
+                        count, state = self._source_image_info(role, image, issues_by_role[role])
+                        item = QTableWidgetItem(count)
+                        item.setToolTip(f"{self.sources[role].title}：{state}")
+                        item.setForeground(QColor("#2563eb" if role == "algorithm" else "#13795b"))
+                        self.image_table.setItem(row, column, item)
+                    if image == previous:
+                        target_row = row
+                self._filter_table()
+                visible = [r for r in range(len(self.images)) if not self.image_table.isRowHidden(r)]
+                if target_row not in visible and visible:
+                    target_row = visible[0]
+                self.image_table.setCurrentCell(target_row if visible else -1, 0 if visible else -1)
+            finally:
+                self.image_table.blockSignals(blocked)
+            # Selection signals are suppressed during the batch; load the preview exactly once.
             self._selection_changed()
         lines = [f"图片 {len(self.images)} 张"]
         for source in self.sources.values():
@@ -1018,6 +1035,12 @@ class MainWindow(QMainWindow):
         return None
 
     def _selection_changed(self, *_args) -> None:
+        with ExitStack() as updates:
+            for table in self.target_tables.values():
+                updates.enter_context(batch_table_updates(table))
+            self._load_selection()
+
+    def _load_selection(self) -> None:
         self.review.flush_note()
         self.review.gt_reference.invalidate()
         path = self.current_image()

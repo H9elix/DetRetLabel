@@ -22,7 +22,7 @@ def run(destination: str) -> int:
         result["checks"].append(label)
 
     try:
-        from PySide6.QtCore import QEvent, QSettings, Qt, QUrl, qVersion
+        from PySide6.QtCore import QEvent, QPoint, QSettings, Qt, QUrl, qVersion
         from PySide6.QtGui import QColor, QImage, QImageReader, QKeyEvent, QTextDocument
         from PySide6.QtWidgets import QApplication, QDialog
         from openpyxl import load_workbook
@@ -109,14 +109,34 @@ def run(destination: str) -> int:
         for record in gt["results"]:
             for target in record["detections"]:
                 target.pop("conf", None)
+                x1, y1, x2, y2 = target.pop("bbox")
+                target.update(xmin=x1 / 640, ymin=y1 / 400, xmax=x2 / 640, ymax=y2 / 400)
+        gt["results"][0]["detections"][0]["conf"] = .8
         for role, document in (("algorithm", data), ("ground_truth", gt)):
             path = output / f"{role}.json"
             path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
             # Build the real mapping dialog, accepting its detected fields without user input.
-            with patch.object(MappingDialog, "exec", return_value=QDialog.DialogCode.Accepted):
+            def accept_mapping(dialog):
+                if role == "ground_truth":
+                    dialog.normalized_coordinates.setChecked(True)
+                    dialog.show()
+                    app.processEvents()
+                    check(all(combo.mapTo(dialog, QPoint(0, combo.height())).y() <=
+                              dialog.category_combo.mapTo(dialog, QPoint()).y() for combo in dialog.coordinate_combos),
+                          "Four-coordinate mapping fields do not overlap category or score")
+                    dialog.close()
+                return QDialog.DialogCode.Accepted
+            with patch.object(MappingDialog, "exec", accept_mapping):
                 window._map_document(document, path, role=role)
             wait_idle()
             check(window.sources[role].result.matched_target_count == 2, f"Import and map {role} JSON")
+
+        gt_source = window.sources["ground_truth"]
+        check(gt_source.mapping.normalized and gt_source.result.detections[images / "01.jpg"][0].box == (220, 50, 300, 190),
+              "Normalized GT coordinates use matched image dimensions")
+        check([item.full_text for item in window.image_view.label_items["ground_truth"]] == ["car", "person"],
+              "GT labels hide confidence even when JSON contains scores")
+        check(window.auto_gt_overlay.isChecked(), "Matched GT overlay enabled by default")
 
         mapping_path = output / "type-mapping.txt"
         mapping_path.write_text("person:行人\ncar:汽车\n", encoding="utf-8")

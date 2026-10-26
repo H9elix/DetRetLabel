@@ -11,7 +11,7 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
 IMAGE_NAMES = ("path", "name", "file_name", "filename", "image_path", "image_name", "image", "file")
@@ -171,6 +171,7 @@ class FieldMapping:
     coordinates: tuple[str, ...] = ()
     category_field: str | None = None
     score_field: str | None = None
+    normalized: bool = False
 
 
 def guess_mapping(document: Any, collection: Collection, detections: str | None | object = MISSING) -> FieldMapping:
@@ -287,7 +288,8 @@ def _number(value: Any, label: str) -> float:
     return number
 
 
-def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int) -> Detection:
+def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int, *,
+                    image_size: tuple[int, int] | None = None) -> Detection:
     if not isinstance(raw, dict):
         raise ValueError("检测目标必须是 JSON 对象")
     if mapping.coordinates:
@@ -307,6 +309,14 @@ def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int) -> Detect
         raise ValueError("暂不支持这种框坐标格式")
     if a <= x or b <= y or not all(map(math.isfinite, (a, b))):
         raise ValueError("框的 xmax、ymax 必须分别大于 xmin、ymin，且坐标必须有限")
+    if mapping.normalized:
+        if (image_size is None or len(image_size) != 2 or
+                any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in image_size)):
+            raise ValueError("换算归一化坐标需要有效的图片宽高")
+        width, height = image_size
+        x, y, a, b = x * width, y * height, a * width, b * height
+        if not all(map(math.isfinite, (x, y, a, b))) or a <= x or b <= y:
+            raise ValueError("归一化坐标换算后的框无效或超出数值范围")
     category = read_pointer(raw, mapping.category_field, None)
     if category is not None and (isinstance(category, bool) or not isinstance(category, (str, int, float))):
         raise ValueError("种类字段必须是名称或数值 ID")
@@ -322,11 +332,14 @@ def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int) -> Detect
     return Detection((x, y, a, b), category, score, ri, ti, raw)
 
 
-def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path]) -> ImportResult:
+def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path], *,
+                   image_size_loader: Callable[[Path], tuple[int, int]] | None = None) -> ImportResult:
     index: dict[str, list[Path]] = defaultdict(list)
     for path in images:
         index[name_key(path.name)].append(path)
     result = ImportResult({}, set(), [], 0, 0)
+    image_sizes: dict[Path, tuple[int, int] | str] = {}
+    reported_size_errors: set[Path] = set()
     for ri, (key, record) in enumerate(iter_records(document, mapping.collection), 1):
         result.record_count += 1
         if not mapping.image_field:
@@ -354,9 +367,32 @@ def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path])
         else:
             result.referenced.add(path)
             result.detections.setdefault(path, [])
+        size = None
+        if mapping.normalized and targets:
+            # Unmatched targets are validated in unit coordinates and never retained.
+            size = (1, 1)
+            if path is not None:
+                if path not in image_sizes:
+                    try:
+                        if image_size_loader is None:
+                            raise ValueError("未提供图片尺寸读取器")
+                        dimensions = image_size_loader(path)
+                        if (len(dimensions) != 2 or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                                or not math.isfinite(v) or v <= 0 for v in dimensions)):
+                            raise ValueError("图片宽高无效")
+                        image_sizes[path] = dimensions
+                    except (OSError, ValueError) as exc:
+                        image_sizes[path] = str(exc)
+                size = image_sizes[path]
+                if isinstance(size, str):
+                    if path not in reported_size_errors:
+                        result.issues.append(ImportIssue("图片尺寸无效", short_name, ri, None,
+                            f"无法换算归一化坐标：{size}"))
+                        reported_size_errors.add(path)
+                    continue
         for ti, target in enumerate(targets, 1):
             try:
-                detection = parse_detection(target, mapping, ri, ti)
+                detection = parse_detection(target, mapping, ri, ti, image_size=size)
             except ValueError as exc:
                 result.issues.append(ImportIssue("目标数据无效", short_name, ri, ti, str(exc)))
             else:

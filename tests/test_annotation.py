@@ -1,8 +1,10 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from dataclasses import asdict, replace
 from unittest.mock import patch
 
 from detretlabel.annotation import AnnotationStore, ReviewConfig, ReviewTarget, source_signature
@@ -38,6 +40,15 @@ class AnnotationDataTests(unittest.TestCase):
         mapping = FieldMapping(Collection(""), "/name", box_field="/bbox")
         self.assertEqual(source_signature([{"a": 1, "b": 2}], mapping), source_signature([{"b": 2, "a": 1}], mapping))
         self.assertNotEqual(source_signature([{"a": 1}], mapping), source_signature([{"a": 2}], mapping))
+
+    def test_pixel_fingerprints_remain_compatible_and_normalization_is_a_distinct_mapping(self):
+        document = [{"name": "image.jpg", "bbox": [1, 2, 30, 40]}]
+        mapping = FieldMapping(Collection(""), "/name", box_field="/bbox")
+        legacy_fields = asdict(mapping)
+        legacy_fields.pop("normalized")
+        legacy_payload = json.dumps([document, legacy_fields], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        self.assertEqual(source_signature(document, mapping), hashlib.sha256(legacy_payload.encode()).hexdigest())
+        self.assertNotEqual(source_signature(document, mapping), source_signature(document, replace(mapping, normalized=True)))
 
     def test_save_reload_reasons_notes_and_manual_targets(self):
         with tempfile.TemporaryDirectory() as temp:
