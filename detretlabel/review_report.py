@@ -141,7 +141,7 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
         sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
         sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
 
-    def table(sheet, row, columns, rows, name):
+    def table(sheet, row, columns, rows, name, *, freeze=True):
         if len(rows) + row > 1048576:
             raise ValueError(f"{sheet.title} 的记录数超过 Excel 单表上限。")
         for col, (key, label, width) in enumerate(columns, 1):
@@ -171,7 +171,8 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
             sheet.add_table(data_table)
         else:
             sheet.auto_filter.ref = f"A{row}:{end}"
-        sheet.freeze_panes = f"D{row + 1}" if len(columns) > 8 else f"A{row + 1}"
+        if freeze:
+            sheet.freeze_panes = f"D{row + 1}" if len(columns) > 8 else f"A{row + 1}"
         sheet.print_title_rows = f"1:{row}"
 
     summary = book.active
@@ -203,7 +204,7 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
     category_columns = [("source", "来源", 18), ("raw_type", "原始种类", 20), ("display_type", "显示种类", 24),
         ("true_positive", "正检", 12), ("false_positive", "误检", 12), ("unreviewed", "未审核", 14),
         ("false_negative", "人工漏检", 16), ("pending_manual", "补框待确认", 16)]
-    table(summary, 19, category_columns, report.categories, "ReviewCategories")
+    table(summary, 19, category_columns, report.categories, "ReviewCategories", freeze=False)
     progress = book.create_sheet("图片进度")
     title(progress, "图片复核进度", 15)
     table(progress, 4, [("image", "图片相对路径", 36), ("algorithm", "算法目标", 12), ("true_positive", "正检", 10),

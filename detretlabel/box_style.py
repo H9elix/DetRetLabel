@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (
 )
 
 
+MANUAL_BOX_COLOR = "#b77aff"
+
+
 LINE_STYLES = {
     "solid": ("实线", Qt.PenStyle.SolidLine),
     "dash": ("虚线", Qt.PenStyle.DashLine),

@@ -33,6 +33,7 @@ def run(destination: str) -> int:
         from detretlabel.review_report import write_excel
         from detretlabel.type_mapping import TypeMapping
         from detretlabel.app_info import AUTHOR, BUILD
+        from detretlabel.box_style import MANUAL_BOX_COLOR
 
         app = QApplication(["DetRetLabel"])
         app.setStyle("Fusion")
@@ -149,17 +150,36 @@ def run(destination: str) -> int:
               "Confidence ordering preserves original JSON identity")
         first_id = review.current.id
         check(window.annotation_panel.keep_reviewed_targets.isChecked(), "Retain reviewed targets enabled by default")
-        review.choose_status("true_positive")
         view = window.image_view
+        check(view.overlay_items["algorithm"][0].pen().color().name() == MANUAL_BOX_COLOR and
+              view.label_items["algorithm"][0].color.name() == MANUAL_BOX_COLOR,
+              "Current review box and label use manual purple")
+        def press(key, modifiers=Qt.KeyboardModifier.NoModifier):
+            view.setFocus()
+            app.sendEvent(view, QKeyEvent(QEvent.Type.KeyPress, key, modifiers))
+            app.sendEvent(view, QKeyEvent(QEvent.Type.KeyRelease, key, modifiers))
+            app.processEvents()
+        press(Qt.Key.Key_1, Qt.KeyboardModifier.KeypadModifier)
+        check(review.store.get(first_id)["status"] == "true_positive" and review.current.id != first_id,
+              "Keypad 1 marks a true positive and advances")
         check(all(item.isVisible() for item in view.overlay_items["algorithm"]) and
               all(item.isVisible() for item in view.label_items["algorithm"]), "Reviewed box and label remain visible after advancing")
+        check(view.overlay_items["algorithm"][0].pen().color().name() == window.box_styles["algorithm"].color and
+              view.label_items["algorithm"][0].color.name() == window.box_styles["algorithm"].color and
+              view.overlay_items["algorithm"][1].pen().color().name() == MANUAL_BOX_COLOR,
+              "Previous target restores source color while next target turns purple")
         window.annotation_panel.keep_reviewed_targets.setChecked(False)
         check(not view.overlay_items["algorithm"][0].isVisible() and not view.label_items["algorithm"][0].isVisible(),
               "Disabling retention hides noncurrent reviewed target")
         window.annotation_panel.keep_reviewed_targets.setChecked(True)
         check(all(item.isVisible() for item in view.label_items["algorithm"]), "Re-enabling retention restores reviewed labels")
-        review.choose_status("false_positive")
-        review.choose_reason("种类检错")
+        second_id = review.current.id
+        press(Qt.Key.Key_2, Qt.KeyboardModifier.KeypadModifier)
+        check(review.reason_status == "false_positive" and review.store.get(second_id)["status"] == "false_positive",
+              "Keypad 2 marks a false positive and opens reasons")
+        press(Qt.Key.Key_1, Qt.KeyboardModifier.KeypadModifier)
+        check(review.store.get(second_id)["reason"] == review.config.reasons["false_positive"][0],
+              "Keypad digits select review reasons")
         check(review.phase == "manual" and review.algorithm_ready(), "03 decisions and automatic 04 transition")
         with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("人工漏检", True)):
             review.add_manual((320, 100, 400, 250))
@@ -168,13 +188,15 @@ def run(destination: str) -> int:
         check(review.save(explicit=True), "Save annotation progress")
         restored = AnnotationStore.load(images)
         check(restored.get(first_id)["status"] == "true_positive" and len(restored.manual_targets) == 1, "Reload saved progress")
-        review.finish_review()
+        check(review.config.shortcuts["finish_review"] == "Space", "Default finish review shortcut is Space")
+        press(Qt.Key.Key_Space)
         check(review.review_completed(window.images[0]), "Complete 04 and retain image review status")
         report = review.report_snapshot()
         path = write_excel(report, output / "复核报告.xlsx")
         workbook = load_workbook(path)
         try:
             check(workbook.sheetnames == ["复核概览", "图片进度", "目标明细"], "Excel export and reopen: all three sheets")
+            check(workbook["复核概览"].freeze_panes is None, "Review overview has no frozen panes")
             check(report.stats["true_positive"] == 1 and report.stats["false_positive"] == 1 and report.stats["false_negative"] == 1, "Exported review statistics")
         finally:
             workbook.close()

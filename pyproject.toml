@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "detretlabel"
-version = "0.1.5"
+version = "0.1.6"
 description = "Windows Qt 检测结果标注工具：图片与 JSON 导入"
 requires-python = ">=3.10"
 dependencies = ["PySide6>=6.8,<7", "openpyxl>=3.1,<4"]

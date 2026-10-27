@@ -352,7 +352,7 @@ def main():
             scale = figure.image(panel.review_frame.grab(), 850, 104, 380)
             for number, widget, title, lines, y in (
                     (1, panel.review_draw_button, "只在 04 中按 B 补框", ["拖动绘制紫色人工框。", "填写种类、原因和备注。"], 505),
-                    (2, panel.finish_review_button, "确认本图 04", ["Ctrl+Enter 完成并保存。", "随后进入下一张未完成图片。"], 640)):
+                    (2, panel.finish_review_button, "确认本图 04", ["空格完成并保存。", "随后进入下一张未完成图片。"], 640)):
                 target = placed(region(widget, panel.review_frame), 850, 104, scale)
                 note = figure.label(number, 850, y, title, lines, 380)
                 figure.highlight(target)

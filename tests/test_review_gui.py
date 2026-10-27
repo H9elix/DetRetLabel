@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
-from PySide6.QtGui import QColor, QFontDatabase, QImage
+from PySide6.QtGui import QColor, QFontDatabase, QImage, QKeyEvent
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -21,7 +21,7 @@ from detretlabel.annotation import AnnotationStore, ReviewConfig, ReviewTarget, 
 from detretlabel.core import Collection, guess_mapping, parse_detection
 from detretlabel.mapping_dialog import MappingDialog
 from detretlabel.type_mapping import TypeMapping
-from detretlabel.box_style import BoxStyle, mismatch_color
+from detretlabel.box_style import BoxStyle, MANUAL_BOX_COLOR, mismatch_color
 
 
 class ReviewGuiTests(unittest.TestCase):
@@ -324,7 +324,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertEqual(table.item(0, 1).background().color().name(), "#fff5d6")
         self.assertFalse(table.selectedItems())
         self.assertIn("IoU", self.w.gt_match_status.full_text)
-        self.assertEqual(view.overlay_items["algorithm"][0].pen().color().name(), "#ff0000")
+        self.assertEqual(view.overlay_items["algorithm"][0].pen().color().name(), MANUAL_BOX_COLOR)
         self.assertTrue(self.w.auto_gt_overlay.isChecked())
         self.assertEqual([item.isVisible() for item in view.overlay_items["ground_truth"]], [True, True, False, False])
         self.w.auto_gt_overlay.setChecked(False)
@@ -520,6 +520,60 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertIsNone(review.reason_status)
         self.assertTrue(self.w.image_table.item(0, 3).text().startswith("2/2"))
         self.assertIn("待复核", self.w.image_table.item(0, 3).text())
+
+    def test_keypad_digits_choose_decisions_all_nine_reasons_and_enter_confirms(self):
+        review, panel = self.w.review, self.w.annotation_panel
+        reasons = tuple(f"reason {index}" for index in range(1, 10))
+        review.apply_config(ReviewConfig(reasons={"false_positive": reasons, "false_negative": reasons}, auto_advance=False))
+        keypad = Qt.KeyboardModifier.KeypadModifier
+        target_id = review.current.id
+        self.key(Qt.Key.Key_1, keypad)
+        self.assertEqual(review.store.get(target_id)["status"], "true_positive")
+        for index, reason in enumerate(reasons, 1):
+            self.key(Qt.Key.Key_2, keypad)
+            self.assertEqual(review.reason_status, "false_positive")
+            self.key(Qt.Key(Qt.Key.Key_0.value + index), keypad)
+            self.assertEqual(review.store.get(target_id)["reason"], reason)
+            self.assertFalse(review.store.get(target_id).get("reason_pending", False))
+        self.key(Qt.Key.Key_2, keypad)
+        panel.reason_combo.setCurrentText("")
+        self.key(Qt.Key.Key_Enter, keypad)
+        self.assertIsNone(review.reason_status)
+        self.assertEqual(review.store.get(target_id)["reason"], "")
+
+    def test_keypad_digits_respect_text_entry_and_ignore_autorepeat(self):
+        review, panel, view = self.w.review, self.w.annotation_panel, self.w.image_view
+        keypad = Qt.KeyboardModifier.KeypadModifier
+        first = review.current.id
+        panel.note.setFocus()
+        QTest.keyClick(panel.note, Qt.Key.Key_1, keypad)
+        QTest.keyClick(panel.note, Qt.Key.Key_2, keypad)
+        self.assertEqual(panel.note.text(), "12")
+        self.assertFalse(review.store.completed(first))
+        panel.auto_next.setChecked(True)
+        self.key(Qt.Key.Key_1, keypad)
+        second = review.current.id
+        self.assertNotEqual(first, second)
+        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_1, keypad, "1", True, 1)
+        QApplication.sendEvent(view, event)
+        self.assertFalse(review.store.completed(second))
+
+    def test_explicit_keypad_binding_takes_priority_and_control_modifier_is_preserved(self):
+        review = self.w.review
+        config = ReviewConfig(auto_advance=False)
+        config.shortcuts["decision_1"] = "Num+1"
+        review.apply_config(config)
+        keypad = Qt.KeyboardModifier.KeypadModifier
+        target_id = review.current.id
+        self.key(Qt.Key.Key_1)
+        self.assertFalse(review.store.completed(target_id))
+        self.key(Qt.Key.Key_1, keypad | Qt.KeyboardModifier.ShiftModifier)
+        self.assertFalse(review.store.completed(target_id))
+        self.key(Qt.Key.Key_1, keypad)
+        self.assertEqual(review.store.get(target_id)["status"], "true_positive")
+        self.key(Qt.Key.Key_1, keypad | Qt.KeyboardModifier.ControlModifier)
+        self.assertTrue(review.algorithm_ready())
+        self.assertEqual(review.phase, "manual")
 
     def test_mouse_buttons_reason_and_status_change_clear_reason(self):
         self.w.annotation_panel.auto_next.setChecked(False)
@@ -896,6 +950,41 @@ class ReviewGuiTests(unittest.TestCase):
         panel.keep_reviewed_targets.click()
         self.assertEqual([item.isVisible() for item in view.overlay_items["algorithm"]], [False, False, True])
         self.assertEqual([item.isVisible() for item in view.label_items["algorithm"]], [False, False, True])
+        self.assertEqual(view.transform(), zoom)
+
+    def test_current_target_and_label_use_manual_purple_and_restore_source_color_on_navigation(self):
+        panel, review, view = self.w.annotation_panel, self.w.review, self.w.image_view
+        self.matching_gt()
+        self.wait_matches()
+        panel.show_all_targets.setChecked(True)
+        panel.show_noncurrent_labels.setChecked(True)
+        view.auto_fit = False
+        view.scale(1.3, 1.3)
+        zoom = view.transform()
+        source_style = BoxStyle("#ff00aa", "dot")
+        with patch("detretlabel.app.BoxStyleDialog") as dialog:
+            dialog.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            dialog.return_value.selected_style.return_value = source_style
+            self.w.configure_box_style("algorithm")
+        self.assertEqual([item.pen().color().name() for item in view.overlay_items["algorithm"]],
+                         [MANUAL_BOX_COLOR, source_style.color])
+        self.assertEqual([label.color.name() for label in view.label_items["algorithm"]],
+                         [MANUAL_BOX_COLOR, source_style.color])
+        self.key(Qt.Key.Key_1)
+        self.assertEqual(review.current.category, "car")
+        self.wait_matches()
+        self.assertEqual([item.pen().color().name() for item in view.overlay_items["algorithm"]],
+                         [source_style.color, MANUAL_BOX_COLOR])
+        self.assertEqual([label.color.name() for label in view.label_items["algorithm"]],
+                         [source_style.color, MANUAL_BOX_COLOR])
+        self.assertTrue(all(item.pen().style() == Qt.PenStyle.DotLine for item in view.overlay_items["algorithm"]))
+        self.w.target_tables["ground_truth"].setCurrentCell(3, 0)
+        self.assertEqual(review.current.category, "car")
+        self.assertEqual(view.overlay_items["algorithm"][1].pen().color().name(), MANUAL_BOX_COLOR)
+        self.key(Qt.Key.Key_Up)
+        self.assertEqual([label.color.name() for label in view.label_items["algorithm"]],
+                         [MANUAL_BOX_COLOR, source_style.color])
+        self.assertEqual(self.w.box_styles["algorithm"], source_style)
         self.assertEqual(view.transform(), zoom)
 
     def test_target_review_updates_only_its_image_progress_row(self):
@@ -1375,6 +1464,9 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertFalse(review.review_completed())
 
     def test_finish_shortcut_commits_custom_reason_while_editing_and_accepts_keypad_enter(self):
+        config = ReviewConfig()
+        config.shortcuts["finish_review"] = "Ctrl+Return"
+        self.w.review.apply_config(config)
         self.w.image_table.setCurrentCell(2, 0)
         review = self.w.review
         review.start_review()
@@ -1389,6 +1481,22 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertTrue(review.review_completed(self.folder / "03.jpg"))
         self.assertEqual(self.w.current_image().name, "01.jpg")
         self.assertIs(QApplication.focusWidget(), self.w.image_view)
+
+    def test_default_space_finishes_review_but_remains_text_while_editing(self):
+        review, panel = self.w.review, self.w.annotation_panel
+        self.assertEqual(review.config.shortcuts["finish_review"], "Space")
+        review.all_positive()
+        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+            review.add_manual((30, 40, 100, 120))
+        review.choose_reason("完全未检出")
+        panel.note.setFocus()
+        QTest.keyClick(panel.note, Qt.Key.Key_Space)
+        self.assertEqual(panel.note.text(), " ")
+        self.assertFalse(review.review_completed())
+        self.assertEqual(self.w.current_image().name, "01.jpg")
+        self.key(Qt.Key.Key_Space)
+        self.assertTrue(review.review_completed(self.folder / "01.jpg"))
+        self.assertEqual(self.w.current_image().name, "02.png")
 
     def test_completion_undo_and_algorithm_source_change_require_new_review(self):
         review = self.w.review

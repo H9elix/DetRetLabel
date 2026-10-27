@@ -88,6 +88,8 @@ class ReviewReportTests(unittest.TestCase):
             self.assertEqual(sheet.tables["TargetReviewDetails"].ref, "A4:U9")
             self.assertEqual(book["图片进度"].max_row, 7)
             self.assertEqual(book["复核概览"]["B4"].value, "复核进行中")
+            self.assertIsNone(book["复核概览"].freeze_panes)
+            self.assertEqual(book["图片进度"].freeze_panes, "D5")
             self.assertFalse(any(c.data_type == "f" for s in book for row in s for c in row))
         finally:
             book.close()

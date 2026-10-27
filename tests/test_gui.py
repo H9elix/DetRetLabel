@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QGraphics
 from detretlabel.app import MainWindow, STYLE
 from detretlabel.core import Collection, import_results, guess_mapping
 from detretlabel.mapping_dialog import MappingDialog
-from detretlabel.box_style import BoxStyle, BoxStyleDialog, DEFAULT_BOX_STYLES
+from detretlabel.box_style import BoxStyle, BoxStyleDialog, DEFAULT_BOX_STYLES, MANUAL_BOX_COLOR
 from detretlabel.app_info import AUTHOR, BUILD
 
 
@@ -537,7 +537,8 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(algorithm.pen().style(), Qt.PenStyle.SolidLine)
         self.assertEqual(gt.pen().style(), Qt.PenStyle.DashLine)
         for role, group in items.items():
-            self.assertEqual(group[0].pen().color().name(), DEFAULT_BOX_STYLES[role].color)
+            self.assertEqual(group[0].pen().color().name(),
+                             MANUAL_BOX_COLOR if role == "algorithm" else DEFAULT_BOX_STYLES[role].color)
             self.assertTrue(group[0].pen().isCosmetic())
             self.assertEqual(group[0].data(0), role)
         self.assertEqual(self.window.image_view.scene.sceneRect().getRect(), (0, 0, 640, 400))
@@ -557,7 +558,7 @@ class GuiTests(unittest.TestCase):
             self.window.source_panels["algorithm"].box_style.click()
         self.assertEqual(view.transform(), zoom)
         self.assertEqual(self.window.box_styles["algorithm"], style)
-        self.assertEqual(view.overlay_items["algorithm"][0].pen().color().name(), style.color)
+        self.assertEqual(view.overlay_items["algorithm"][0].pen().color().name(), MANUAL_BOX_COLOR)
         self.assertEqual(view.overlay_items["algorithm"][0].pen().style(), Qt.PenStyle.DotLine)
         self.assertEqual(self.window.box_styles["ground_truth"], DEFAULT_BOX_STYLES["ground_truth"])
         self.assertEqual(view.overlay_items["ground_truth"][0].pen().style(), Qt.PenStyle.DashLine)

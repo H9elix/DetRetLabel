@@ -21,7 +21,7 @@ DEFAULT_SHORTCUTS = {**{f"decision_{n}": str(n) for n in range(1, 10)},
     "previous_target": "Up", "next_target": "Down", "previous_image": "Left", "next_image": "Right",
     "confirm": "Return", "back": "Escape", "clear": "Backspace", "next_unreviewed": "N",
     "draw_missed": "B", "toggle_ground_truth": "G", "hold_all_algorithm": "H",
-    "all_positive": "Ctrl+1", "start_review": "R", "finish_review": "Ctrl+Return",
+    "all_positive": "Ctrl+1", "start_review": "R", "finish_review": "Space",
     "next_review_image": "M", "undo": "Ctrl+Z", "save": "Ctrl+S"}
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Qt
+from PySide6.QtCore import QEvent, QKeyCombination, QObject, QTimer, Qt
 from PySide6.QtGui import QColor, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QInputDialog, QLineEdit, QMessageBox,
@@ -805,10 +805,19 @@ class ReviewController(QObject):
             return False
         if not isinstance(watched, QWidget) or watched.window() is not self.w or QApplication.activeModalWidget():
             return False
-        key = QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
-        if key.split("+")[-1] == "Enter":
-            key = key[:-5] + "Return"
-        operation = self.shortcuts.get(key)
+        combinations = [event.keyCombination()]
+        if event.modifiers() & Qt.KeyboardModifier.KeypadModifier:
+            # Try explicit Num+ shortcuts first, then treat keypad keys like their main-keyboard equivalents.
+            combinations.append(QKeyCombination(event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier,
+                                                Qt.Key(event.key())))
+        operation = None
+        for combination in combinations:
+            key = QKeySequence(combination).toString(QKeySequence.SequenceFormat.PortableText)
+            if key.split("+")[-1] == "Enter":
+                key = key[:-5] + "Return"
+            operation = self.shortcuts.get(key)
+            if operation is not None:
+                break
         if operation is None:
             return False
         focused = QApplication.focusWidget()

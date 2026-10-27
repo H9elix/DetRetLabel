@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from .core import IMAGE_EXTENSIONS, FieldMapping, ImportResult, import_results, load_json, scan_images
 from .mapping_dialog import MappingDialog
 from .widgets import CollapsibleSection, ElidedLabel, JsonSourcePanel, SettingsScrollArea, batch_table_updates
-from .box_style import BoxStyle, BoxStyleDialog, DEFAULT_BOX_STYLES, LABEL_FIELDS, LINE_STYLES
+from .box_style import BoxStyle, BoxStyleDialog, DEFAULT_BOX_STYLES, LABEL_FIELDS, LINE_STYLES, MANUAL_BOX_COLOR
 from .overlay_label import BoxLabelItem
 from .annotation import AnnotationStore, source_signature
 from .annotation_panel import AnnotationPanel
@@ -254,8 +254,7 @@ class ImageView(QGraphicsView):
                 pen = QPen(self._base_pens[source_role])
                 reference_selected = ((source_role == "ground_truth" and number == self.selected_gt_index) or
                                       (source_role == "manual" and number == self.selected_manual_index))
-                if source_role == "ground_truth" and number == self.mismatch_gt_index:
-                    pen.setColor(QColor(self.mismatch_gt_color))
+                pen.setColor(self._target_color(source_role, number))
                 pen.setWidthF(4 if selected else 3 if reference_selected else 2)
                 item.setPen(pen)
                 color = QColor(pen.color())
@@ -263,12 +262,12 @@ class ImageView(QGraphicsView):
                 item.setBrush(QBrush(color) if selected else QBrush(Qt.BrushStyle.NoBrush))
                 reference = reference_selected or (source_role == "ground_truth" and number in (self.same_gt_index, self.mismatch_gt_index))
                 item.setZValue(3 if reference else 2 if selected else 0)
-        for label in self.label_items.get("ground_truth", []):
-            color = (QColor(self.mismatch_gt_color) if label.data(1) == self.mismatch_gt_index
-                     else self._base_pens["ground_truth"].color())
-            if label.color != color:
-                label.color = QColor(color)
-                label.update()
+        for source_role, labels in self.label_items.items():
+            for label in labels:
+                color = self._target_color(source_role, label.data(1))
+                if label.color != color:
+                    label.color = QColor(color)
+                    label.update()
         self._layout_overlay_labels()
 
     def set_gt_references(self, selected: int = 0, same: int = 0, mismatch: int = 0,
@@ -279,6 +278,13 @@ class ImageView(QGraphicsView):
         self.set_current_target(self.active_role, self.active_index, show_all=self.show_all_targets,
             show_noncurrent_labels=self.show_noncurrent_labels, show_ground_truth=self.show_ground_truth,
             retained_algorithm_indices=self.retained_algorithm_indices)
+
+    def _target_color(self, role: str, index: int) -> QColor:
+        if role in ("algorithm", "manual") and role == self.active_role and index == self.active_index:
+            return QColor(MANUAL_BOX_COLOR)
+        if role == "ground_truth" and index == self.mismatch_gt_index:
+            return QColor(self.mismatch_gt_color)
+        return self._base_pens[role].color()
 
     def _target_visible(self, role: str, index: int, *, label: bool = False) -> bool:
         if role == "ground_truth":
@@ -309,7 +315,7 @@ class ImageView(QGraphicsView):
         self._press_position = event.position()
         if self.draw_mode and event.button() == Qt.MouseButton.LeftButton:
             self._draw_start = self._image_point(event.position())
-            pen = QPen(QColor("#b77aff"), 2, Qt.PenStyle.DashLine)
+            pen = QPen(QColor(MANUAL_BOX_COLOR), 2, Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
             self._rubber = self.scene.addRect(QRectF(self._draw_start, self._draw_start), pen)
             self._rubber.setZValue(100)
@@ -925,7 +931,7 @@ class MainWindow(QMainWindow):
         manual = self.review.role_targets("manual")
         if manual:
             gt_style = self.box_styles["ground_truth"]
-            sources["manual"] = (manual, BoxStyle("#b77aff", gt_style.line_style,
+            sources["manual"] = (manual, BoxStyle(MANUAL_BOX_COLOR, gt_style.line_style,
                 **{name: getattr(gt_style, name) for name in LABEL_FIELDS}), "人工补框")
         self.image_view.set_overlays(sources, self.type_mappings)
         self.review.highlight()

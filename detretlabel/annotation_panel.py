@@ -12,7 +12,7 @@ from .widgets import ElidedLabel
 
 
 def display_key(key: str) -> str:
-    names = {"Up": "↑", "Down": "↓", "Left": "←", "Right": "→", "Return": "Enter", "Escape": "Esc"}
+    names = {"Up": "↑", "Down": "↓", "Left": "←", "Right": "→", "Return": "Enter", "Escape": "Esc", "Space": "空格"}
     return "+".join(names.get(part, part) for part in key.split("+"))
 
 
