@@ -19,6 +19,7 @@ import sys
 import urllib.request
 import zipfile
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 
@@ -274,6 +275,30 @@ def build_pack(output: Path, archive: Path) -> dict:
     outputs["06_import_edge_cases.json"] = {"meta": {**meta, "deliberate_invalid_records": True}, "results": edge}
     outputs["07_filename_dictionary.json"] = {
         r["path"].replace("\\", "/").rsplit("/", 1)[-1]: r["detections"] for r in records}
+    normalized = copy.deepcopy(records)
+    for record in normalized:
+        width, height = record["width"], record["height"]
+        for target in record["detections"]:
+            x1, y1, x2, y2 = target.pop("bbox")
+            target["xywh"] = [round(value, 12) for value in
+                              (x1 / width, y1 / height, (x2 - x1) / width, (y2 - y1) / height)]
+    normalized_meta = {**meta, "bbox_format": "xywh", "coordinate_units": "normalized",
+                       "note": "坐标除以图片宽高，保留原始越界框；导入时勾选归一化坐标。"}
+    outputs["08_results_xywh_normalized.json"] = {"meta": normalized_meta, "results": normalized}
+    outputs["09_results_flat_xywh_normalized.json"] = [
+        {"name": r["path"].replace("\\", "/").rsplit("/", 1)[-1],
+         "width": r["width"], "height": r["height"], **t}
+        for r in normalized for t in r["detections"]]
+    normalized_fields = copy.deepcopy(normalized)
+    for record in normalized_fields:
+        for target in record["detections"]:
+            target.update(zip(("x", "y", "w", "h"), target.pop("xywh")))
+    outputs["10_results_xywh_fields_normalized.json"] = {
+        "meta": {**normalized_meta, "coordinate_fields": ["x", "y", "w", "h"]}, "results": normalized_fields}
+    outputs["11_results_flat_xywh_fields_normalized.json"] = [
+        {"name": r["path"].replace("\\", "/").rsplit("/", 1)[-1],
+         "width": r["width"], "height": r["height"], **t}
+        for r in normalized_fields for t in r["detections"]]
     outputs["ground_truth.json"] = {"meta": {**meta, "confidence_origin": "absent: ground truth has no confidence",
         "missing_labels": "Images without a source label file are omitted; this does not mean the image has no objects."},
         "results": [{**r, "detections": [{k: v for k, v in t.items() if k != "conf"} for t in r["detections"]]}
@@ -303,10 +328,13 @@ def build_pack(output: Path, archive: Path) -> dict:
     validation = {}
     custom_mapping = FieldMapping(Collection("/payload/frames"), "/frame_meta/asset", "/hits", "xyxy", None,
         ("/geometry/left", "/geometry/top", "/geometry/right", "/geometry/bottom"), "/semantic/tag", "/metrics/likelihood")
+    image_sizes = {r["path"].replace("\\", "/").rsplit("/", 1)[-1]: (r["width"], r["height"]) for r in records}
     for filename, data in outputs.items():
-        collection = Collection("") if filename.startswith("03_") else Collection("", "keyed") if filename.startswith("07_") else Collection("/results")
+        collection = Collection("") if isinstance(data, list) else Collection("", "keyed") if filename.startswith("07_") else Collection("/results")
         mapping = custom_mapping if filename.startswith("04_") else guess_mapping(data, collection)
-        result = import_results(data, mapping, images)
+        if filename.startswith(("08_", "09_", "10_", "11_")):
+            mapping = replace(mapping, normalized=True)
+        result = import_results(data, mapping, images, image_size_loader=lambda path: image_sizes[path.name])
         validation[filename] = {"matched_images": len(result.referenced), "matched_targets": result.matched_target_count,
                                "record_count": result.record_count, "issues": dict(result.issue_counts),
                                "images_without_json_record": len(images) - len(result.referenced)}
@@ -365,6 +393,10 @@ JSON 路径故意混用 Linux / Windows 路径，均应按最后的文件名匹�
 | `05_simulated_detection_errors.json` | 人工加入类别错误、漏框、额外框、低分正确框、空结果和缺少图片记录 | 与 01 相同 |
 | `06_import_edge_cases.json` | 故意损坏部分目标、缺少置信度、无效图片字段、无效列表、未匹配文件名 | 与 01 相同，预期 5 条问题；缺少置信度的目标保留并排在末尾 |
 | `07_filename_dictionary.json` | 直接以图片名作为字典键 | 根节点、字典键、`/detections`、`/bbox`、xyxy |
+| `08_results_xywh_normalized.json` | 按图片分组的归一化数组 | `/results`、`/path`、`/detections`、`/xywh`、xywh；勾选归一化 |
+| `09_results_flat_xywh_normalized.json` | 每条记录一个目标的归一化数组 | 根节点、`/name`、平铺记录、`/xywh`、xywh；勾选归一化 |
+| `10_results_xywh_fields_normalized.json` | 按图片分组的归一化四字段 | `/results`、`/path`、`/detections`、x/y/w/h；xywh，勾选归一化 |
+| `11_results_flat_xywh_fields_normalized.json` | 平铺归一化四字段，可测试固定格式导出 | 根节点、`/name`、平铺记录、x/y/w/h；xywh，勾选归一化；可映射 `/width`、`/height` |
 | `ground_truth.json` | 数据集真实框，不添加置信度 | 与 01 相同；置信度选择“不导入” |
 
 `04_custom_fields.json` 手动映射：

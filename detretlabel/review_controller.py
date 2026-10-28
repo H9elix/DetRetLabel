@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
+import copy
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QEvent, QKeyCombination, QObject, QTimer, Qt
@@ -14,6 +16,9 @@ from PySide6.QtWidgets import (
 from .annotation import AnnotationStore, ReviewConfig, ReviewTarget, STATUSES, source_signature
 from .annotation_panel import display_key
 from .review_report import build_report, write_excel
+from .target_export import build_target_export, check_report_path, write_export_files
+from .export_dialogs import ExportCheckDialog, choose_manual_category
+from .type_mapping import TypeMapping
 from .gt_reference import GTReferenceController
 from .widgets import batch_table_updates
 
@@ -37,6 +42,7 @@ class ReviewController(QObject):
         self._selecting = False
         self._note_pending = False
         self._all_progress_dirty = True
+        self._metadata_store = None
         self.gt_reference = GTReferenceController(self)
         self.config = ReviewConfig()
         self.shortcuts = {}
@@ -62,6 +68,7 @@ class ReviewController(QObject):
         self.panel.import_config.connect(self.import_config)
         self.panel.save_requested.connect(lambda: self.save(explicit=True))
         self.panel.export_requested.connect(self.export_report)
+        self.panel.json_export_requested.connect(self.export_targets)
         self.panel.undo_requested.connect(self.undo)
         self.panel.previous_target.connect(lambda: self.move_target(-1))
         self.panel.next_target.connect(lambda: self.move_target(1))
@@ -82,7 +89,8 @@ class ReviewController(QObject):
         for role, table in window.target_tables.items():
             table.currentCellChanged.connect(lambda row, col, oldrow, oldcol, r=role: self.table_selected(r, row))
             table.cellClicked.connect(lambda row, col, r=role: self.table_selected(r, row))
-        window.target_tables["manual"].cellDoubleClicked.connect(lambda row, col: self.edit_manual(row))
+        window.target_tables["manual"].cellDoubleClicked.connect(
+            lambda row, col: self.change_manual_category(row) if col == 1 else self.edit_manual(row))
         default_path = Path(__file__).resolve().parents[1] / "config" / "reasons.json"
         configured = Path(window.settings.value("review/reasons_path", str(default_path)))
         try:
@@ -125,6 +133,45 @@ class ReviewController(QObject):
     def role_targets(self, role: str, path: Path | None = None) -> list[ReviewTarget]:
         return [t for t in self.by_image.get(path or self.w.current_image(), []) if t.role == role]
 
+    def preserve_mapping_enrichment(self, role, document, mapping, result, signature, path):
+        """Retain decisions only for missing optional fields added to identical input."""
+        source = self.w.sources[role]
+        old = source.mapping
+        if role != "algorithm" or old is None or source.document != document or source.signature == signature:
+            return
+        geometry = ("collection", "image_field", "detections_field", "box_format", "box_field", "coordinates", "normalized")
+        if any(getattr(old, key) != getattr(mapping, key) for key in geometry):
+            return
+        optional = ("category_field", "score_field")
+        if any(getattr(old, key) is not None and getattr(old, key) != getattr(mapping, key) for key in optional):
+            return
+        if not any(getattr(old, key) is None and getattr(mapping, key) is not None for key in optional):
+            return
+        for image, detections in result.detections.items():
+            relative = image.relative_to(self.w.folder).as_posix()
+            previous = {(target.record_index, target.target_index): target for target in self.by_image.get(image, [])
+                        if target.role == role and target.signature == source.signature}
+            positions = set()
+            for detection in detections:
+                position = (detection.record_index, detection.target_index)
+                before = previous.get(position)
+                if not before or before.box != detection.box:
+                    continue
+                positions.add(position)
+                record = self.store.get(before.id)
+                if not record:
+                    continue
+                target = ReviewTarget.from_detection(relative, role, path, signature, detection)
+                if target.id not in self.store.records:
+                    self.store.records[target.id] = {**copy.deepcopy(record), "target": target.to_dict()}
+                    self.store.dirty = True
+                if self.current_id == before.id:
+                    self.current_id = target.id
+            review = self.store.image_reviews.get(relative)
+            if positions == set(previous) and len(detections) == len(previous) and review and review["algorithm_signature"] == source.signature:
+                review["algorithm_signature"] = signature
+                self.store.dirty = True
+
     def rebuild(self) -> None:
         self._all_progress_dirty = True
         self.flush_note()
@@ -135,11 +182,21 @@ class ReviewController(QObject):
         self.by_image = {image: [] for image in self.w.images}
         if not self.w.folder:
             return
+        if self._metadata_store is not self.store:
+            self._metadata_store = self.store
+            for role, entries in self.store.type_mappings.items():
+                self.w.type_mappings[role] = TypeMapping(dict(entries))
+            self.w._refresh_type_mapping_controls()
         for role, source in self.w.sources.items():
             if source.result is None or source.mapping is None:
                 continue
             if not source.signature:
                 source.signature = source_signature(source.document, source.mapping)
+            if role == "algorithm":
+                for path, size in source.result.image_sizes.items():
+                    if path in self.by_image:
+                        self.store.remember_image_size(path.relative_to(self.w.folder).as_posix(), size,
+                            "image" if path in source.result.actual_size_images else "json")
             for image, detections in source.result.detections.items():
                 if image not in self.by_image:
                     continue
@@ -186,10 +243,11 @@ class ReviewController(QObject):
         with batch_table_updates(table):
             table.setRowCount(len(targets))
             for row, target in enumerate(targets):
-                values = [str(row + 1), str(target.category) if target.category is not None else "—", "—",
+                values = [str(row + 1), self.w.category_display("manual", target.category) if target.category is not None else "—", "—",
                           *(f"{v:g}" for v in target.box)]
                 for col, value in enumerate(values):
                     table.setItem(row, col, QTableWidgetItem(value))
+                table.item(row, 1).setToolTip(f"原始 type：{target.category!r}；双击此列可修改种类并保留数值/字符串类型。")
         table.blockSignals(False)
         self.w.set_target_count("manual", len(targets))
 
@@ -289,6 +347,8 @@ class ReviewController(QObject):
         self.panel.scope_combo.blockSignals(False)
         self.panel.undo_button.setEnabled(bool(self.store.history) and not self.w.busy)
         self.panel.export_button.setEnabled(bool(self.w.images) and not self.w.busy)
+        self.panel.json_export_button.setEnabled(bool(self.w.images) and not self.w.busy)
+        self.panel.export_frame.setEnabled(not self.w.busy)
         image = self.w.current_image()
         relative = image.relative_to(self.w.folder).as_posix() if image and self.w.folder else None
         self.panel.clear_image_button.setEnabled(bool(relative and self.store.has_annotations(relative)) and not self.w.busy)
@@ -457,6 +517,9 @@ class ReviewController(QObject):
         self.flush_note()
         self.flush_reason_draft()
         self.save_timer.stop()
+        if self.store.folder:
+            for role, mapping in self.w.type_mappings.items():
+                self.store.remember_type_mapping(role, mapping.entries)
         try:
             self.store.save()
         except (OSError, ValueError) as exc:
@@ -483,7 +546,7 @@ class ReviewController(QObject):
             return
         stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
         directory = Path(self.w.settings.value("review/export_folder", str(self.w.folder.parent)))
-        filename, _ = QFileDialog.getSaveFileName(self.w, "导出当前复核报告（包含全部已加载图片）",
+        filename, _ = QFileDialog.getSaveFileName(self.w, "导出 Excel 复核报告（包含全部已加载图片）",
             str(directory / f"复核报告_{stamp}.xlsx"), "Excel 工作簿 (*.xlsx)")
         if not filename:
             return
@@ -493,8 +556,104 @@ class ReviewController(QObject):
         snapshot = self.report_snapshot()
         def done(value):
             self.w.settings.setValue("review/export_folder", str(value.parent))
-            self.w.statusBar().showMessage(f"复核报告已导出：{value}")
-        self.w._run("正在导出复核报告…", lambda: write_excel(snapshot, path), done)
+            self.w.statusBar().showMessage(f"Excel 复核报告已导出：{value}")
+        self.w._run("正在导出 Excel 复核报告…", lambda: write_excel(snapshot, path), done)
+
+    def export_targets(self) -> None:
+        if self.w.busy or not self.w.images:
+            return
+        stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
+        directory = Path(self.w.settings.value("review/json_export_folder", str(self.w.folder.parent)))
+        filename, _ = QFileDialog.getSaveFileName(self.w, "导出有效目标json（正检与人工补漏）",
+            str(directory / f"有效目标_{stamp}.json"), "JSON 文件 (*.json)")
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.lower() != ".json":
+            path = path.with_name(path.name + ".json")
+        protected = [source.path for source in self.w.sources.values() if source.path]
+        protected += [mapping.path for mapping in self.w.type_mappings.values() if mapping.path]
+        protected += [self.config.path] if self.config.path else []
+        protected += [self.store.path] if self.store.path else []
+        if any(output.resolve() == source.resolve() for output in (path, check_report_path(path)) for source in protected):
+            QMessageBox.warning(self.w, "请选择其他导出名称", "导出路径与输入 JSON、种类映射或标注进度文件相同，请更换名称。")
+            return
+        snapshot = self.report_snapshot()
+        self._check_and_export_targets(snapshot, path)
+
+    def _check_and_export_targets(self, snapshot, path, overrides=None):
+        sizes = dict(self.store.image_sizes)
+        sizes.update(overrides or {})
+        source = self.w.sources["algorithm"]
+        notes = {image.relative_to(self.w.folder).as_posix(): note for image, note in
+                 (source.result.size_issues.items() if source.result else []) if image in self.by_image}
+        for image in overrides or {}:
+            notes.pop(image, None)
+        mapping = TypeMapping(dict(self.w.type_mappings["algorithm"].entries))
+        trusted = {image for image, kind in self.store.image_size_sources.items() if kind in ("image", "manual")}
+        def run():
+            export = build_target_export(snapshot, image_sizes=sizes, type_mapping=mapping,
+                image_size_loader=self.w._image_dimensions, size_issues=notes, trusted_sizes=trusted)
+            try:
+                files = write_export_files(export, path)
+            except (OSError, ValueError) as exc:
+                return export, exc
+            return export, files
+        def done(value):
+            export, files = value
+            for image, size in export.image_sizes.items():
+                kind = self.store.image_size_sources.get(image, "image") if self.store.image_sizes.get(image) == size else "image"
+                self.store.remember_image_size(image, size, kind)
+            if self.store.dirty:
+                self.save_timer.start()
+            if isinstance(files, Exception):
+                self._show_export_failure(str(files))
+                return
+            if not export.errors:
+                self._targets_export_done(export, files)
+                return
+            dialog = ExportCheckDialog(self.w, export, files.check_report)
+            action = dialog.exec()
+            if action == ExportCheckDialog.FIX_SIZES:
+                values = dialog.dimension_overrides()
+                for image, size in values.items():
+                    self.store.remember_image_size(image, size, "manual")
+                self.save_timer.start()
+                self._check_and_export_targets(snapshot, path, {**(overrides or {}), **values})
+            elif action == ExportCheckDialog.PARTIAL:
+                def write():
+                    try:
+                        return write_export_files(export, path, allow_partial=True)
+                    except (OSError, ValueError) as exc:
+                        return exc
+                def written(result):
+                    if isinstance(result, Exception):
+                        self._show_export_failure(str(result))
+                    else:
+                        self._targets_export_done(export, result)
+                self.w._run("正在导出已明确选择的有效目标…", write, written)
+            elif action == ExportCheckDialog.REMAP:
+                QTimer.singleShot(0, lambda: self.w.remap_json("algorithm"))
+            else:
+                self.w.statusBar().showMessage(f"JSON 未生成；检查报告：{files.check_report}")
+        self.w._run("正在检查尺寸、种类及映射并导出有效目标 JSON…", run, done)
+
+    def _targets_export_done(self, export, files):
+        self.w.settings.setValue("review/json_export_folder", str(files.json.parent))
+        text = f"有效目标 JSON 已导出：{files.json} · {files.target_count} 个目标"
+        if files.skipped_count:
+            text += f" · 已按选择跳过 {files.skipped_count} 个目标"
+        if files.check_report:
+            text += f" · {len(export.warnings)} 项提示，检查报告：{files.check_report.name}"
+        self.w.statusBar().showMessage(text)
+
+    def _show_export_failure(self, message):
+        self.w.statusBar().showMessage("有效目标 JSON 保存失败，已有文件保留")
+        dialog = QMessageBox(QMessageBox.Icon.Warning, "有效目标 JSON 未保存", message,
+                             QMessageBox.StandardButton.Close, self.w)
+        copy = dialog.addButton("复制错误详情", QMessageBox.ButtonRole.ActionRole)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(message))
+        dialog.exec()
 
     def clear(self) -> None:
         if self.current and not self.w.busy:
@@ -733,10 +892,11 @@ class ReviewController(QObject):
         path = self.w.current_image()
         if path is None or self.phase != "manual":
             return
-        category, accepted = QInputDialog.getText(self.w, "补充漏检目标", "目标种类（可留空）：")
+        category, accepted = choose_manual_category(self.w,
+            [target.category for target in self.targets.values() if target.role != "ground_truth"], self.w.type_mappings["algorithm"])
         if not accepted:
             return
-        target = ReviewTarget.manual(path.relative_to(self.w.folder).as_posix(), box, category.strip() or None)
+        target = ReviewTarget.manual(path.relative_to(self.w.folder).as_posix(), box, category)
         self.store.set_annotation(target, "false_negative")
         self.rebuild()
         self.fill_manual_table()
@@ -745,6 +905,23 @@ class ReviewController(QObject):
         self.reason_status = "false_negative"
         self.changed()
         QTimer.singleShot(0, self.scroll_to_review)
+
+    def change_manual_category(self, row: int):
+        targets = self.role_targets("manual")
+        if self.w.busy or not 0 <= row < len(targets):
+            return
+        target = targets[row]
+        category, accepted = choose_manual_category(self.w,
+            [item.category for item in self.targets.values() if item.role != "ground_truth"], self.w.type_mappings["algorithm"])
+        if not accepted:
+            return
+        record = self.store.get(target.id) or {}
+        self.store.set_annotation(replace(target, category=category), record.get("status"),
+                                  record.get("reason", ""), record.get("note", ""))
+        self.rebuild()
+        self.fill_manual_table()
+        self.w._update_overlays()
+        self.changed()
 
     def delete_manual(self) -> None:
         if self.current and self.current.role == "manual" and not self.w.busy:

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from .core import Detection, FieldMapping, load_json
+from .core import Detection, FieldMapping, image_dimensions, load_json
 
 STATUSES = {"true_positive": "正检", "false_positive": "误检", "false_negative": "漏检"}
 DEFAULT_SHORTCUTS = {**{f"decision_{n}": str(n) for n in range(1, 10)},
@@ -62,6 +62,8 @@ class ReviewConfig:
 
 def source_signature(document: Any, mapping: FieldMapping) -> str:
     fields = asdict(mapping)
+    fields.pop("width_field", None)
+    fields.pop("height_field", None)
     if not mapping.normalized:
         # Pixel imports must retain the same fingerprint as versions before this option.
         fields.pop("normalized", None)
@@ -91,7 +93,7 @@ class ReviewTarget:
                    str(source or ""), signature, target.record_index, target.target_index)
 
     @classmethod
-    def manual(cls, image: str, box: tuple, category: str | None = None):
+    def manual(cls, image: str, box: tuple, category: Any = None):
         return cls("manual-" + uuid.uuid4().hex, image, "manual", tuple(box), category)
 
     def to_dict(self) -> dict:
@@ -133,6 +135,9 @@ class AnnotationStore:
         self.dirty = False
         self.image_reviews: dict[str, dict] = {}
         self.reference_annotations: dict[str, dict] = {}
+        self.image_sizes: dict[str, tuple[int, int]] = {}
+        self.image_size_sources: dict[str, str] = {}
+        self.type_mappings: dict[str, dict[str, str]] = {}
         self.history: list[ReviewChange] = []
         self._transaction: ReviewChange | None = None
 
@@ -185,7 +190,38 @@ class AnnotationStore:
                     or not isinstance(review.get("algorithm_signature"), str)):
                 raise ValueError("图片复核状态无效。")
             store.image_reviews[image] = review
+        sizes, mappings = data.get("image_sizes", {}), data.get("type_mappings", {})
+        if not isinstance(sizes, dict) or not isinstance(mappings, dict):
+            raise ValueError("已有标注的图片尺寸或种类显示映射无效。")
+        for image, size in sizes.items():
+            if (not isinstance(image, str) or not image or PureWindowsPath(image).is_absolute() or
+                    Path(image).is_absolute() or ".." in image.replace("\\", "/").split("/")):
+                raise ValueError("已保存的图片尺寸路径无效。")
+            store.image_sizes[image] = image_dimensions(size)
+        sources = data.get("image_size_sources", {})
+        if not isinstance(sources, dict) or any(key not in store.image_sizes or value not in ("image", "json", "manual", "saved") for key, value in sources.items()):
+            raise ValueError("已保存的图片尺寸来源无效。")
+        store.image_size_sources = dict(sources)
+        for role, entries in mappings.items():
+            if role not in ("algorithm", "ground_truth") or not isinstance(entries, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str) for key, value in entries.items()):
+                raise ValueError("已保存的种类显示映射无效。")
+            store.type_mappings[role] = dict(entries)
         return store
+
+    def remember_image_size(self, image: str, size, source="image") -> None:
+        size = image_dimensions(size)
+        if source == "json" and image in self.image_sizes and self.image_size_sources.get(image, "saved") != "json":
+            return
+        if self.image_sizes.get(image) != size or self.image_size_sources.get(image) != source:
+            self.image_sizes[image] = size
+            self.image_size_sources[image] = source
+            self.dirty = True
+
+    def remember_type_mapping(self, role: str, entries: dict[str, str]) -> None:
+        if self.type_mappings.get(role) != entries:
+            self.type_mappings[role] = dict(entries)
+            self.dirty = True
 
     def get(self, target_id: str) -> dict | None:
         return self.records.get(target_id)
@@ -251,7 +287,8 @@ class AnnotationStore:
         reason_pending = bool(reason_pending and target.role == "algorithm" and status == "false_positive")
         reason_draft = reason_draft if reason_pending else ""
         old = self.records.get(target.id)
-        if old and (old["status"], old["reason"], old["note"], old.get("reason_pending", False), old.get("reason_draft", "")) == (status, reason, note, reason_pending, reason_draft):
+        target_changed = bool(old and target.role == "manual" and old["target"] != target.to_dict())
+        if old and not target_changed and (old["status"], old["reason"], old["note"], old.get("reason_pending", False), old.get("reason_draft", "")) == (status, reason, note, reason_pending, reason_draft):
             return
         with self.transaction(target.id):
             self._remember(target.id)
@@ -261,7 +298,7 @@ class AnnotationStore:
                 "updated_at": datetime.now(timezone(timedelta(hours=8))).isoformat()}
             if reason_pending:
                 self.records[target.id].update(reason_pending=True, reason_draft=reason_draft)
-            if not old or (old["status"], old["reason"]) != (status, reason):
+            if not old or target_changed or (old["status"], old["reason"]) != (status, reason):
                 self.invalidate_review(target.image)
             self.dirty = True
 
@@ -351,6 +388,7 @@ class AnnotationStore:
             raise ValueError("请先选择图片文件夹，再保存标注。")
         payload = {"version": 2, "annotations": self.records, "image_reviews": self.image_reviews,
                    "reference_annotations": self.reference_annotations,
+                   "image_sizes": self.image_sizes, "image_size_sources": self.image_size_sources, "type_mappings": self.type_mappings,
                    "manual_targets": {key: value.to_dict() for key, value in self.manual_targets.items()}}
         encoded = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)

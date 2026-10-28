@@ -206,7 +206,7 @@ class ImageView(QGraphicsView):
             items = []
             labels = []
             for index, target in enumerate(targets, 1):
-                category = (type_mappings or {}).get(role, TypeMapping()).display(target.category)
+                category = (type_mappings or {}).get("algorithm" if role == "manual" else role, TypeMapping()).display(target.category)
                 x1, y1, x2, y2 = target.box
                 item = QGraphicsRectItem(QRectF(x1, y1, x2 - x1, y2 - y1), self.overlay_root)
                 item.setPen(style.pen())
@@ -639,7 +639,15 @@ class MainWindow(QMainWindow):
         workspace = QSplitter(Qt.Orientation.Horizontal)
         workspace.addWidget(vertical)
         self.annotation_panel = AnnotationPanel()
-        workspace.addWidget(self.annotation_panel)
+        self.annotation_column = QWidget()
+        self.annotation_column.setMinimumWidth(300)
+        self.annotation_column.setMaximumWidth(350)
+        annotation_layout = QVBoxLayout(self.annotation_column)
+        annotation_layout.setContentsMargins(0, 0, 0, 0)
+        annotation_layout.setSpacing(6)
+        annotation_layout.addWidget(self.annotation_panel, 1)
+        annotation_layout.addWidget(self.annotation_panel.export_frame)
+        workspace.addWidget(self.annotation_column)
         workspace.setStretchFactor(0, 1)
         workspace.setSizes([650, 310])
         right_layout.addWidget(workspace, 1)
@@ -813,10 +821,13 @@ class MainWindow(QMainWindow):
         images = tuple(self.images)
         def done(value):
             result, signature = value
+            self.review.preserve_mapping_enrichment(role, document, mapping, result, signature, source)
             state.document, state.path, state.mapping, state.result = document, source, mapping, result
             state.signature = signature
             self.settings.setValue("last_json" if role == "algorithm" else "last_gt_json", str(source))
             self._refresh()
+            if self.review.store.dirty:
+                self.review.save_timer.start()
             (self.gt_tabs if role == "ground_truth" else self.target_tabs).setCurrentWidget(self.target_tables[role])
             self.statusBar().showMessage(f"{state.title}已导入 · 匹配 {len(result.referenced)} 张图片 / "
                                          f"{result.matched_target_count} 个有效目标 · 问题 {len(result.issues)} 条")
@@ -868,7 +879,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{self.sources[role].title}框样式已更新")
 
     def category_display(self, role: str, category) -> str | None:
-        return self.type_mappings.get(role, TypeMapping()).display(category)
+        return self.type_mappings.get("algorithm" if role == "manual" else role, TypeMapping()).display(category)
 
     def choose_type_mapping(self, role: str) -> None:
         if self.busy:
@@ -889,6 +900,9 @@ class MainWindow(QMainWindow):
             return
         self.review.flush_note()
         self.type_mappings[role] = mapping
+        if self.review.store.folder:
+            self.review.store.remember_type_mapping(role, mapping.entries)
+            self.review.save_timer.start()
         self.settings.setValue(f"type_mappings/{role}/entries", json.dumps(mapping.entries, ensure_ascii=False))
         self.settings.setValue(f"type_mappings/{role}/path", str(mapping.path or ""))
         self._refresh_type_mapping_controls()
@@ -900,6 +914,8 @@ class MainWindow(QMainWindow):
                 item.setText(self.category_display(role, target.category) if target.category is not None else "—")
                 item.setToolTip(f"原始种类：{category_text(target.category)}")
         self._update_overlays()
+        if role == "algorithm":
+            self.review.fill_manual_table()
         self.review.render()
         self._update_controls()
         self.statusBar().showMessage(f"{source.title}：" + (f"已应用 {len(mapping.entries)} 条种类映射" if mapping.entries else "已恢复原始种类显示"))
@@ -1065,6 +1081,9 @@ class MainWindow(QMainWindow):
         row = self.image_table.currentRow()
         error = self.image_view.show_image(path)
         dimensions = self.image_view.dimensions
+        if dimensions and self.folder and self.review.store.folder == self.folder:
+            self.review.store.remember_image_size(path.relative_to(self.folder).as_posix(), dimensions)
+            self.review.save_timer.start()
         suffix = f" · {dimensions[0]} × {dimensions[1]}" if dimensions else " · 解码失败"
         self.image_title.setText(f"{row + 1} / {len(self.images)}   {path.name}{suffix}")
         self.image_title.setToolTip(str(path))

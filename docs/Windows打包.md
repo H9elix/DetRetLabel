@@ -55,7 +55,7 @@ python -m venv .venv
 - 中文及空格目录中的图片可扫描，Linux / Windows JSON 路径均可匹配。
 - 算法和 GT 字段映射、框叠加、种类显示映射可用。
 - 正检 / 误检审核、自动进入 04、人工补漏、进度保存和恢复可用。
-- Excel 报告导出后可重新读取，三张表及统计正确。
+- 05 的 Excel 与 JSON 按钮独立可用；复核报告含原有三页及正检 / 误检 / 漏检独立统计明细页，六张表及统计正确。JSON 仅含正检与人工补漏，固定十字段、归一化 xywh、八位小数，补漏置信度为 1，type_name 为字符串；Excel 检查明细支持筛选，概览不冻结。
 
 记录保存在 `artifacts/packaging/<时间>/single/` 和 `folder/`，包括 `result.json`、界面截图、临时测试图片及报告。仅当两种 exe 都通过检查时，脚本才生成分发 ZIP 和 `build-manifest.json`。
 

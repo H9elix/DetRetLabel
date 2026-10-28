@@ -31,6 +31,7 @@ def run(destination: str) -> int:
         from detretlabel.app import MainWindow, STYLE
         from detretlabel.mapping_dialog import MappingDialog
         from detretlabel.review_report import write_excel
+        from detretlabel.target_export import OUTPUT_FIELDS, build_target_export, write_export_files
         from detretlabel.type_mapping import TypeMapping
         from detretlabel.app_info import AUTHOR, BUILD
         from detretlabel.box_style import MANUAL_BOX_COLOR
@@ -181,7 +182,7 @@ def run(destination: str) -> int:
         check(review.store.get(second_id)["reason"] == review.config.reasons["false_positive"][0],
               "Keypad digits select review reasons")
         check(review.phase == "manual" and review.algorithm_ready(), "03 decisions and automatic 04 transition")
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("人工漏检", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("人工漏检", True)):
             review.add_manual((320, 100, 400, 250))
         review.choose_reason("完全未检出")
         check(len(review.store.manual_targets) == 1, "Manual missed detection in 04")
@@ -195,11 +196,36 @@ def run(destination: str) -> int:
         path = write_excel(report, output / "复核报告.xlsx")
         workbook = load_workbook(path)
         try:
-            check(workbook.sheetnames == ["复核概览", "图片进度", "目标明细"], "Excel export and reopen: all three sheets")
+            check(workbook.sheetnames == ["复核概览", "图片进度", "目标明细", "正检", "误检", "漏检"], "Excel export and reopen: all six sheets")
             check(workbook["复核概览"].freeze_panes is None, "Review overview has no frozen panes")
             check(report.stats["true_positive"] == 1 and report.stats["false_positive"] == 1 and report.stats["false_negative"] == 1, "Exported review statistics")
+            check(all(workbook[name]["B4"].value == 1 and workbook[name].freeze_panes is None and
+                      len(workbook[name].tables) == 2 for name in ("正检", "误检", "漏检")),
+                  "Separate positive, false-positive and missed-target sheets include totals, categories and lists")
         finally:
             workbook.close()
+        export = build_target_export(report, image_sizes=review.store.image_sizes,
+            type_mapping=window.type_mappings["algorithm"], image_size_loader=window._image_dimensions)
+        files = write_export_files(export, output / "有效目标.json")
+        exported = json.loads(files.json.read_text(encoding="utf-8"))
+        check(len(exported) == 2 and {target["type"] for target in exported} == {"person", "人工漏检"},
+              "JSON export contains positives and manual misses only")
+        check(next(target["conf"] for target in exported if target["type"] == "人工漏检") == 1,
+              "Manual missed detections export confidence 1")
+        check(all(tuple(target) == OUTPUT_FIELDS for target in exported) and exported[0]["type_name"] == "行人",
+              "Fixed flat schema and mapped string type names")
+        check('"conf": 1.00000000' in files.json.read_text(encoding="utf-8") and exported[0]["width"] == 640,
+              "Eight decimal places and normalized coordinates with image sizes")
+        check(window.annotation_panel.json_export_button.text() == "导出有效目标json", "Independent JSON export button")
+        check(not window.annotation_panel.widget().isAncestorOf(window.annotation_panel.json_export_button) and
+              window.annotation_panel.export_title.text() == "05  保存与导出", "Persistent independent step-five export area")
+        checkbook = load_workbook(files.check_report)
+        try:
+            check(checkbook.sheetnames == ["检查明细", "导出概览"] and
+                  "ExportChecks" in checkbook["检查明细"].tables and checkbook["导出概览"].freeze_panes is None,
+                  "Filterable Excel export-check report and freely scrolling summary")
+        finally:
+            checkbook.close()
         window.image_table.setCurrentCell(0, 0)
         app.processEvents()
         check(window.grab().save(str(output / "window.png")), "Capture rendered GUI")

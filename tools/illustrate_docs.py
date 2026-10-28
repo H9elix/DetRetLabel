@@ -154,7 +154,7 @@ def workflow():
     figure = Figure(1240, 295, "一次审核的操作路线", "01 / 02 准备数据；03 审算法；04 查漏检；随时可以保存和导出。")
     entries = [("01", "选择图片", "格式 / 子目录"), ("02", "导入 JSON", "算法 + 可选 GT"),
                ("03", "审核正误", "1 正检 / 2 误检"), ("04", "漏检复核", "B 补框 / 确认完成"),
-               ("导出", "Excel 报告", "未完成时也能导出")]
+               ("导出", "Excel + JSON", "未完成时也能导出")]
     for index, (number, title, sub) in enumerate(entries):
         x = 28 + index * 244
         figure.box(x, 105, 208, 106, fill="#ffffff")
@@ -266,7 +266,7 @@ def main():
                        (window.source_panels["ground_truth"], "GT 参考 JSON", ["按需添加，字段独立映射。", "GT 不会替你作出判定。"]),
                        (window.annotation_panel.wheel, "03 审正误", ["1 正检 / 2 误检。", "误检后数字键切为原因。"]),
                        (window.target_splitter, "目标表联动", ["算法 / GT 分列显示。", "点算法行即切到对应目标。"]),
-                       (window.annotation_panel.export_button, "导出报告", ["随时导出当前审核进度。", "包含未完成的图片和目标。"])]
+                       (window.annotation_panel.export_frame, "05 保存与导出", ["右侧底部固定显示。", "Excel 与 JSON 独立导出。"])]
             for i, (widget, title, lines) in enumerate(targets, 1):
                 rect = placed(region(widget, window), 20, 98, scale)
                 if i in (1, 2, 3, 5):
@@ -295,7 +295,7 @@ def main():
                       (dialog.targets_combo, "每图的目标数组", ["例如 /detections。", "平铺格式选“记录本身”。"]),
                       (dialog.format_combo, "框坐标含义", ["xyxy：左上与右下。", "xywh：左上与宽高。"]),
                       (dialog.normalized_coordinates, "是否归一化", ["比例坐标勾选；像素不勾选。", "按实际图片宽高换算。"]),
-                      (dialog.score_combo, "种类与置信度", ["type / score 可选。", "没有置信度可不导入。"]),
+                      (dialog.score_combo, "种类与置信度", ["JSON 导出需要原始 type。", "没有置信度可不导入。"]),
                       (ok, "确认映射并导入", ["核对完成再点击。", "有问题可返回重新映射。"])]
             for i, (widget, title, lines) in enumerate(fields, 1):
                 right_note(figure, i, 862, 110 + (i - 1) * 128, title, lines, placed(region(widget, dialog), 20, 98))
@@ -341,7 +341,7 @@ def main():
             review.choose_reason("种类检错")
 
             review.start_review()
-            with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("行人", True)):
+            with patch("detretlabel.review_controller.choose_manual_category", return_value=("行人", True)):
                 review.add_manual((794, 160, 848, 310))
             review.choose_reason("完全未检出")
             panel.show_noncurrent_labels.setChecked(False)

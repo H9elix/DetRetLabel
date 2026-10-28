@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
 from detretlabel.annotation import AnnotationStore, ReviewTarget
 from detretlabel.review_report import build_report, write_excel
@@ -40,6 +41,97 @@ class ReviewReportTests(unittest.TestCase):
             {"algorithm": "alg.json", "ground_truth": "gt.json"},
             {self.images[2]: "空目标列表"}, **kwargs)
 
+    def table_rows(self, sheet, name):
+        left, top, right, bottom = range_boundaries(sheet.tables[name].ref)
+        headers = [sheet.cell(top, column).value for column in range(left, right + 1)]
+        return [dict(zip(headers, [sheet.cell(row, column).value for column in range(left, right + 1)]))
+                for row in range(top + 1, bottom + 1)]
+
+    def test_separate_result_sheets_have_matching_totals_categories_and_full_target_lists(self):
+        report = self.snapshot()
+        book = load_workbook(write_excel(report, self.folder / "classified.xlsx"))
+        try:
+            for name, key, prefix, expected_id in (
+                    ("正检", "true_positive", "TruePositive", self.a.id),
+                    ("误检", "false_positive", "FalsePositive", self.b.id),
+                    ("漏检", "false_negative", "FalseNegative", self.manual.id)):
+                sheet = book[name]
+                self.assertEqual(sheet["B4"].value, report.stats[key])
+                self.assertEqual(sheet["E4"].value, 1)
+                self.assertEqual(sheet["H4"].value, 1)
+                categories = self.table_rows(sheet, prefix + "Categories")
+                targets = self.table_rows(sheet, prefix + "Targets")
+                self.assertEqual(sum(row[f"{name}数量"] for row in categories), sheet["B4"].value)
+                self.assertEqual(len(targets), sheet["B4"].value)
+                self.assertEqual(targets[0]["目标唯一标识"], expected_id)
+                self.assertEqual(targets[0]["图片相对路径"], "one.jpg")
+                self.assertIn("xmin", targets[0])
+                self.assertIn("备注", targets[0])
+                self.assertIn("原因（已保存）", targets[0])
+                self.assertIsNone(sheet.freeze_panes)
+                self.assertEqual(sheet.tables[prefix + "Targets"].autoFilter.ref, sheet.tables[prefix + "Targets"].ref)
+                _, header, _, _ = range_boundaries(sheet.tables[prefix + "Targets"].ref)
+                self.assertEqual(sheet["B5"].hyperlink.location, f"'{name}'!A{header}")
+            positive = self.table_rows(book["正检"], "TruePositiveTargets")[0]
+            self.assertEqual(positive["备注"], "=中文备注")
+            self.assertEqual(positive["置信度（原始尺度）"], .912345)
+            self.assertEqual(positive["显示种类"], "行人")
+        finally:
+            book.close()
+
+    def test_per_class_counts_distinguish_numeric_and_string_types_with_the_same_display_name(self):
+        self.store.set_annotation(self.c, "true_positive")
+        for target in (replace(self.a, id="numeric-zero", category=0), replace(self.a, id="string-zero", category="0")):
+            self.by_image[self.images[0]].append(target)
+            self.store.set_annotation(target, "true_positive")
+        book = load_workbook(write_excel(self.snapshot(), self.folder / "types.xlsx"))
+        try:
+            sheet = book["正检"]
+            self.assertEqual(sheet["B4"].value, 4)
+            self.assertEqual(sheet["H4"].value, 3)
+            rows = self.table_rows(sheet, "TruePositiveCategories")
+            counts = {(row["原始种类"], row["type 值类型"]): row["正检数量"] for row in rows}
+            self.assertEqual(counts, {("0", "数值"): 2, ("0", "字符串"): 1, ("001", "字符串"): 1})
+            self.assertEqual({row["显示种类"] for row in rows if row["原始种类"] == "0"}, {"汽车"})
+        finally:
+            book.close()
+
+    def test_pending_reasons_and_unknown_manual_types_are_visible_without_including_old_algorithm_misses(self):
+        self.store.set_annotation(self.a, "false_negative", "旧算法漏检")
+        self.store.set_annotation(self.b, "false_positive", reason_pending=True, reason_draft="待确认原因")
+        self.store.set_annotation(self.pending, "false_negative")
+        book = load_workbook(write_excel(self.snapshot(), self.folder / "pending.xlsx"))
+        try:
+            self.assertEqual(book["正检"]["B4"].value, 0)
+            sheet = book["误检"]
+            self.assertEqual(sheet["B4"].value, 1)
+            self.assertEqual(sheet["E5"].value, 1)
+            self.assertEqual(self.table_rows(sheet, "FalsePositiveCategories")[0]["其中原因待确认"], 1)
+            row = self.table_rows(sheet, "FalsePositiveTargets")[0]
+            self.assertEqual(row["人工结论"], "误检（原因待确认）")
+            self.assertEqual(row["原因草稿（未确认）"], "待确认原因")
+            sheet = book["漏检"]
+            self.assertEqual(sheet["B4"].value, 2)
+            categories = self.table_rows(sheet, "FalseNegativeCategories")
+            self.assertIn("未指定种类", [row["原始种类"] for row in categories])
+            ids = {row["目标唯一标识"] for row in self.table_rows(sheet, "FalseNegativeTargets")}
+            self.assertEqual(ids, {self.manual.id, self.pending.id})
+            self.assertNotIn(self.a.id, ids)
+        finally:
+            book.close()
+
+    def test_result_sheets_include_decisions_on_unfinished_images(self):
+        self.store.set_annotation(self.c, "true_positive")
+        book = load_workbook(write_excel(self.snapshot(), self.folder / "in-progress.xlsx"))
+        try:
+            sheet = book["正检"]
+            self.assertEqual(sheet["B4"].value, 2)
+            self.assertEqual(sheet["E4"].value, 2)
+            self.assertEqual(sheet["H5"].value, 1)
+            self.assertEqual({row["图片相对路径"] for row in self.table_rows(sheet, "TruePositiveTargets")}, {"one.jpg", "two.png"})
+        finally:
+            book.close()
+
     def test_scope_statistics_completion_and_draft_are_independent_of_gt(self):
         old = replace(self.a, id="old-version", signature="old")
         self.store.set_annotation(old, "false_positive", "旧记录")
@@ -74,7 +166,7 @@ class ReviewReportTests(unittest.TestCase):
         path = write_excel(self.snapshot(pending_reason=("b", "临时输入")), self.folder / "报告.xlsx")
         book = load_workbook(path)
         try:
-            self.assertEqual(book.sheetnames, ["复核概览", "图片进度", "目标明细"])
+            self.assertEqual(book.sheetnames, ["复核概览", "图片进度", "目标明细", "正检", "误检", "漏检"])
             sheet = book["目标明细"]
             self.assertEqual(sheet["D5"].value, "001")
             self.assertEqual(sheet["D5"].data_type, "s")
@@ -101,6 +193,12 @@ class ReviewReportTests(unittest.TestCase):
             self.assertEqual(book["图片进度"].max_row, 7)
             self.assertEqual(book["目标明细"].max_row, 4)
             self.assertEqual(report.stats["pending_images"], 3)
+            for name in ("正检", "误检", "漏检"):
+                self.assertEqual(book[name]["B4"].value, 0)
+                self.assertEqual(book[name]["H4"].value, 0)
+                self.assertEqual(book[name]["A9"].value, f"暂无{name}目标")
+                self.assertEqual(book[name].max_row, 12)
+                self.assertIsNone(book[name].freeze_panes)
         finally:
             book.close()
 

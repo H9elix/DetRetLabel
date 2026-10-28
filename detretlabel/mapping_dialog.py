@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 
 from .core import (
     Collection, FieldMapping, discover_collections, fields, guess_mapping,
-    read_pointer, sample_records, sample_targets, target_list_fields,
+    mapping_conflicts, read_pointer, sample_records, sample_targets, target_list_fields,
 )
 
 
@@ -69,9 +69,14 @@ class MappingDialog(QDialog):
             self.collection_combo.addItem(collection.label, collection)
         self.image_combo = QComboBox()
         self.targets_combo = QComboBox()
+        self.width_combo, self.height_combo = QComboBox(), QComboBox()
         form.addRow("记录所在位置", self.collection_combo)
         form.addRow("图片名 / 图片路径", self.image_combo)
         form.addRow("每张图的目标列表", self.targets_combo)
+        form.addRow("图片宽度（可选）", self.width_combo)
+        form.addRow("图片高度（可选）", self.height_combo)
+        for combo in (self.width_combo, self.height_combo):
+            combo.setToolTip("图片的像素宽高，来自当前图片记录；不是目标框的 w / h。正常优先读取实际图片，此映射仅作补充。")
         layout.addWidget(record_box)
 
         target_box = QGroupBox("2  选择目标属性")
@@ -105,9 +110,11 @@ class MappingDialog(QDialog):
         target_form.addRow("框坐标含义", self.format_combo)
         target_form.addRow(self.normalized_coordinates)
         target_form.addRow(self.box_stack)
-        target_form.addRow("目标种类（可选）", self.category_combo)
+        target_form.addRow("原始种类 type", self.category_combo)
         target_form.addRow("置信度（可选）", self.score_combo)
-        warning = QLabel("请核对 xyxy / xywh 及是否归一化；不勾选时按像素坐标解释。xywh 的 x、y 是左上角，不能直接使用中心点坐标。置信度保留原始数值。")
+        self.category_combo.setToolTip("映射原始类别值，即 type-mapping 的左值。有效目标 JSON 导出需要种类；显示名称通过 02 的 type-mapping 取得。")
+        self.score_combo.setToolTip("可不映射。导出时缺失置信度为 null，并在导出检查报告中提示。")
+        warning = QLabel("此处配置输入坐标含义。有效目标 JSON 统一导出归一化 x / y / w / h，与输入格式无关。未映射种类的目标需要补充种类后才能导出；置信度缺失为 null。")
         warning.setWordWrap(True)
         warning.setObjectName("warning")
         target_form.addRow(warning)
@@ -131,7 +138,8 @@ class MappingDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
         for combo in (self.collection_combo, self.image_combo, self.targets_combo, self.box_mode,
-                      self.format_combo, self.box_combo, *self.coordinate_combos, self.category_combo, self.score_combo):
+                      self.format_combo, self.box_combo, *self.coordinate_combos, self.category_combo, self.score_combo,
+                      self.width_combo, self.height_combo):
             combo.setMinimumContentsLength(12)
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -146,6 +154,8 @@ class MappingDialog(QDialog):
             self._select(self.image_combo, initial.image_field)
             self._select(self.targets_combo, initial.detections_field)
             self._apply_target_mapping(initial)
+            self._select(self.width_combo, initial.width_field)
+            self._select(self.height_combo, initial.height_field)
 
     @staticmethod
     def _select(combo: QComboBox, data: Any) -> None:
@@ -179,6 +189,10 @@ class MappingDialog(QDialog):
         if collection.kind == "keyed":
             self.image_combo.insertItem(1, "使用字典的键作为图片名", "@key")
         self._select(self.image_combo, guessed.image_field)
+        self._fill(self.width_combo, options, records, "自动读取实际图片（不映射）")
+        self._fill(self.height_combo, options, records, "自动读取实际图片（不映射）")
+        self._select(self.width_combo, guessed.width_field)
+        self._select(self.height_combo, guessed.height_field)
         self.targets_combo.blockSignals(True)
         self.targets_combo.clear()
         self.targets_combo.addItem("每条记录本身就是一个检测目标（平铺列表）", None)
@@ -227,7 +241,7 @@ class MappingDialog(QDialog):
         self.box_stack.updateGeometry()
 
     def _coordinate_labels(self) -> None:
-        names = ("xmin", "ymin", "xmax", "ymax") if self.format_combo.currentData() == "xyxy" else ("x", "y", "width", "height")
+        names = ("xmin", "ymin", "xmax", "ymax") if self.format_combo.currentData() == "xyxy" else ("x", "y", "w（框宽）", "h（框高）")
         for label, name in zip(self.coordinate_labels, names):
             label.setText(name)
 
@@ -238,6 +252,7 @@ class MappingDialog(QDialog):
             self.box_combo.currentData() if self.box_mode.currentIndex() == 0 else None,
             tuple(combo.currentData() or "" for combo in self.coordinate_combos) if self.box_mode.currentIndex() else (),
             self.category_combo.currentData(), self.score_combo.currentData(), self.normalized_coordinates.isChecked(),
+            self.width_combo.currentData(), self.height_combo.currentData(),
         )
 
     def accept(self) -> None:
@@ -251,6 +266,8 @@ class MappingDialog(QDialog):
             message = "请选择四个不同的坐标字段。"
         elif targets and not mapping.box_field and not mapping.coordinates:
             message = "请选择框数组字段，或切换为四个独立坐标字段。"
+        elif mapping_conflicts(mapping):
+            message = "\n".join(mapping_conflicts(mapping))
         if message:
             self.error.setText(message)
             return

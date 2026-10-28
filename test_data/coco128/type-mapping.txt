@@ -21,3 +21,5 @@ cow:牛
 chair:椅子
 couch:沙发
 clock:时钟
+giraffe:长颈鹿
+orange:橘子

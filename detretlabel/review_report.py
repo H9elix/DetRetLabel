@@ -57,11 +57,13 @@ def build_report(folder: Path, images: list[Path], by_image: dict[Path, list[Rev
                     bucket = "false_negative" if status == "false_negative" else "pending_manual"
                     status_text = "漏检" if bucket == "false_negative" else "待确认漏检"
                 counts[bucket] += 1
-                display = type_mappings.get(role, TypeMapping()).display(target.category)
+                display = type_mappings.get("algorithm" if role == "manual" else role, TypeMapping()).display(target.category)
                 raw = category_text(target.category)
                 source = "算法结果" if role == "algorithm" else "人工补漏"
                 categories[(source, raw, display if display is not None else "未指定种类")][bucket] += 1
-                detail.append({"image": image, "source": source, "number": number, "raw_type": raw,
+                detail.append({"image": image, "source": source, "role": role, "status_code": status,
+                    "reason_pending": bool(record.get("reason_pending")),
+                    "category": target.category, "number": number, "raw_type": raw,
                     "display_type": display, "score": target.score, "xmin": target.box[0], "ymin": target.box[1],
                     "xmax": target.box[2], "ymax": target.box[3], "status": status_text,
                     "reason": record.get("reason", ""), "draft": draft if target.id == pending_id else record.get("reason_draft", ""),
@@ -98,12 +100,13 @@ def build_report(folder: Path, images: list[Path], by_image: dict[Path, list[Rev
                        for role, value in type_mappings.items()}, dict(stats), image_rows, target_rows, category_rows)
 
 
-def write_excel(report: ReviewReport, path: Path) -> Path:
+def write_excel(report: ReviewReport, path: Path, *, targets_description: str = "") -> Path:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.worksheet.table import Table, TableStyleInfo
         from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.hyperlink import Hyperlink
     except ImportError as exc:
         raise ValueError("缺少 Excel 导出依赖，请使用项目 Python 安装 requirements.txt 后重试。") from exc
 
@@ -141,11 +144,13 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
         sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
         sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
 
-    def table(sheet, row, columns, rows, name, *, freeze=True):
+    def table(sheet, row, columns, rows, name, *, freeze=True, grow_widths=False):
         if len(rows) + row > 1048576:
             raise ValueError(f"{sheet.title} 的记录数超过 Excel 单表上限。")
         for col, (key, label, width) in enumerate(columns, 1):
-            sheet.column_dimensions[get_column_letter(col)].width = width
+            letter = get_column_letter(col)
+            previous = sheet.column_dimensions[letter].width if letter in sheet.column_dimensions else 0
+            sheet.column_dimensions[letter].width = max(previous, width) if grow_widths else width
             cell = sheet.cell(row, col)
             put(cell, label)
             cell.font = Font(name="Microsoft YaHei", size=10, bold=True, color="FFFFFF")
@@ -184,6 +189,8 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
         ("算法种类映射", report.mappings.get("algorithm", "未配置")), ("GT 种类映射", report.mappings.get("ground_truth", "未配置")),
         ("导出范围", "全部已加载图片；不受图片搜索筛选影响；不包含旧版本算法目标和 GT 人工历史标记。"),
         ("统计说明", "正检 / 误检来自算法目标人工判定，漏检来自人工补框。03 与 04 分别记录，仅两步都完成才算图片完成；原因待确认仍算 03 未完成，草稿不视为已确认原因。")]
+    if targets_description:
+        metadata.append(("有效目标 JSON", targets_description))
     for row, (label, value) in enumerate(metadata, 4):
         put(summary.cell(row, 1), label)
         summary.cell(row, 1).font = Font(name="Microsoft YaHei", size=10, bold=True, color=navy)
@@ -224,6 +231,68 @@ def write_excel(report: ReviewReport, path: Path) -> Path:
         ("algorithm_state", "03 算法审核", 18), ("miss_review_state", "04 漏检复核", 18)]
     title(details, "目标审核明细", len(detail_columns))
     table(details, 4, detail_columns, report.targets, "TargetReviewDetails")
+
+    for label, status, role, prefix in (("正检", "true_positive", "algorithm", "TruePositive"),
+                                       ("误检", "false_positive", "algorithm", "FalsePositive"),
+                                       ("漏检", "false_negative", "manual", "FalseNegative")):
+        selected = []
+        grouped = {}
+        for record in report.targets:
+            if record["role"] != role or record["status_code"] != status:
+                continue
+            value = record["category"]
+            kind = "未指定" if value is None else "字符串" if isinstance(value, str) else "数值"
+            row = {**record, "type_value_kind": kind}
+            selected.append(row)
+            key = (kind, record["raw_type"], record["display_type"])
+            category = grouped.setdefault(key, {"raw_type": record["raw_type"] or "未指定种类",
+                "type_value_kind": kind, "display_type": record["display_type"] or "未指定种类",
+                "count": 0, "images": set(), "pending_reasons": 0})
+            category["count"] += 1
+            category["images"].add(record["image"])
+            category["pending_reasons"] += int(record.get("reason_pending", False))
+        category_rows = [{**category, "image_count": len(category["images"])} for category in grouped.values()]
+        category_rows.sort(key=lambda row: (-row["count"], row["type_value_kind"], row["raw_type"], row["display_type"]))
+        sheet = book.create_sheet(label)
+        page_columns = detail_columns[:4] + [("type_value_kind", "type 值类型", 14)] + detail_columns[4:]
+        title(sheet, f"{label}结果概览与目标列表", len(page_columns))
+        scope = "算法目标已判正检" if status == "true_positive" else "算法目标已判误检，原因待确认也列入并标明" if status == "false_positive" else "人工补框已标为漏检"
+        put(sheet.cell(2, 1), f"导出时间：{report.exported_at}  |  {scope}；包含未完成图片中的已有结论。")
+        for column, text, value in ((1, f"{label}目标数", len(selected)),
+                                    (4, "涉及图片数", len({row['image'] for row in selected})),
+                                    (7, "种类数", len(category_rows))):
+            put(sheet.cell(4, column), text)
+            put(sheet.cell(4, column + 1), value)
+            sheet.cell(4, column + 1).font = Font(name="Microsoft YaHei", size=14, bold=True, color=blue)
+        sheet.row_dimensions[4].height = 28
+        put(sheet.cell(5, 1), "快速查看")
+        sheet.merge_cells("B5:C5")
+        put(sheet.cell(5, 2), "跳转到目标列表 ↓")
+        if status == "false_positive":
+            put(sheet.cell(5, 4), "原因待确认")
+            put(sheet.cell(5, 5), sum(row.get("reason_pending", False) for row in selected))
+        put(sheet.cell(5, 7), "未完成图片内目标")
+        put(sheet.cell(5, 8), sum(row["review_state"] != "复核完成" for row in selected))
+        sheet.row_dimensions[5].height = 28
+        sheet.merge_cells("A6:H6")
+        put(sheet.cell(6, 1), "按原始种类及数值 / 字符串类型分别统计；同名显示种类不会合并不同 type。未审核、待确认补框、GT 和旧算法漏检不计入本页。")
+        sheet.row_dimensions[6].height = 34
+        put(sheet.cell(7, 1), f"各个种类的{label}统计")
+        type_columns = [("raw_type", "原始种类", 24), ("type_value_kind", "type 值类型", 14),
+                        ("display_type", "显示种类", 26), ("count", f"{label}数量", 14),
+                        ("image_count", "涉及图片数", 16)]
+        if status == "false_positive":
+            type_columns.append(("pending_reasons", "其中原因待确认", 20))
+        table(sheet, 8, type_columns, category_rows, prefix + "Categories", freeze=False, grow_widths=True)
+        if not selected:
+            put(sheet.cell(9, 1), f"暂无{label}目标")
+        list_title_row = 10 + max(1, len(category_rows))
+        header_row = list_title_row + 1
+        put(sheet.cell(list_title_row, 1), f"{label}目标列表（{len(selected)} 个）")
+        table(sheet, header_row, page_columns, selected, prefix + "Targets", freeze=False, grow_widths=True)
+        sheet.cell(5, 2).hyperlink = Hyperlink(ref="B5", location=f"'{label}'!A{header_row}", display="跳转到目标列表 ↓")
+        sheet.cell(5, 2).font = Font(name="Microsoft YaHei", size=10, color=blue, underline="single")
+        sheet.print_title_rows = f"{header_row}:{header_row}"
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

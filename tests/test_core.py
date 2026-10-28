@@ -93,6 +93,21 @@ class ImportTests(unittest.TestCase):
         self.assertIn("图片损坏", result.issues[0].message)
         self.assertEqual(result.detections[self.images[0]], [])
 
+    def test_optional_image_dimensions_are_checked_without_slowing_pixel_import(self):
+        data = [{"name": "0001.jpg", "bbox": [1, 2, 30, 40], "type": "car", "width": width, "height": 400}
+                for width in (640, 320)]
+        mapping = guess_mapping(data, Collection(""))
+        loader = Mock(return_value=(640, 400))
+        pixel = import_results(data, mapping, self.images, image_size_loader=loader)
+        loader.assert_not_called()
+        self.assertEqual(pixel.matched_target_count, 2)
+        self.assertIn(self.images[0], pixel.size_issues)
+        self.assertFalse(pixel.issues)
+        normalized = import_results(data, replace(mapping, normalized=True), self.images, image_size_loader=loader)
+        self.assertEqual(normalized.image_sizes[self.images[0]], (640, 400))
+        self.assertIn(self.images[0], normalized.actual_size_images)
+        self.assertIn("实际图片", normalized.size_issues[self.images[0]])
+
     def test_normalized_empty_targets_need_no_size_and_invalid_sizes_are_rejected(self):
         data = [{"name": "0001.jpg", "detections": []}]
         loader = Mock()

@@ -172,6 +172,37 @@ class FieldMapping:
     category_field: str | None = None
     score_field: str | None = None
     normalized: bool = False
+    width_field: str | None = None  # image record; export metadata, excluded from review identity
+    height_field: str | None = None
+
+
+def mapping_conflicts(mapping: FieldMapping) -> list[str]:
+    selected = list(mapping.coordinates) if mapping.coordinates else ([mapping.box_field] if mapping.box_field else [])
+    selected += [p for p in (mapping.category_field, mapping.score_field) if p]
+    if mapping.detections_field is None:
+        selected += [p for p in (mapping.image_field, mapping.width_field, mapping.height_field) if p and p != "@key"]
+    errors = []
+    for index, first in enumerate(selected):
+        for second in selected[index + 1:]:
+            if first == second or first.startswith(second + "/") or second.startswith(first + "/"):
+                errors.append(f"字段用途冲突：{first} 与 {second}。请分别选择图片、框、种类、置信度及图片尺寸字段。")
+    if bool(mapping.width_field) != bool(mapping.height_field):
+        errors.append("图片宽度和高度字段需要同时映射，或都不映射。")
+    if mapping.width_field and mapping.width_field == mapping.height_field:
+        errors.append("图片宽度与高度不能映射到同一字段。")
+    return list(dict.fromkeys(errors))
+
+
+def image_dimensions(value: Any) -> tuple[int, int]:
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        raise ValueError("图片宽高必须是两个正整数")
+    result = []
+    for item in value:
+        number = _number(item, "图片宽高")
+        if number <= 0 or not number.is_integer():
+            raise ValueError("图片宽高必须是正整数")
+        result.append(int(number))
+    return tuple(result)
 
 
 def guess_mapping(document: Any, collection: Collection, detections: str | None | object = MISSING) -> FieldMapping:
@@ -196,9 +227,16 @@ def guess_mapping(document: Any, collection: Collection, detections: str | None 
         if all(paths):
             coords, box, box_format = paths, None, fmt
             break
+    width = guess_field(record_fields, ("width", "image_width", "img_width"))
+    height = guess_field(record_fields, ("height", "image_height", "img_height"))
+    if not detections and (width in coords or height in coords):
+        width = height = None  # These are box dimensions, not image dimensions.
+    if not width or not height:
+        width = height = None
     return FieldMapping(collection, "@key" if collection.kind == "keyed" else
                         (guess_field(record_fields, IMAGE_NAMES) or ""), detections, box_format, box, coords,
-                        guess_field(target_fields, TYPE_NAMES), guess_field(target_fields, SCORE_NAMES))
+                        guess_field(target_fields, TYPE_NAMES), guess_field(target_fields, SCORE_NAMES),
+                        width_field=width, height_field=height)
 
 
 def load_json(path: Path) -> Any:
@@ -266,6 +304,9 @@ class ImportResult:
     issues: list[ImportIssue]
     record_count: int
     target_count: int
+    image_sizes: dict[Path, tuple[int, int]] = field(default_factory=dict)
+    size_issues: dict[Path, str] = field(default_factory=dict)
+    actual_size_images: set[Path] = field(default_factory=set)
 
     @property
     def matched_target_count(self) -> int:
@@ -334,6 +375,9 @@ def parse_detection(raw: Any, mapping: FieldMapping, ri: int, ti: int, *,
 
 def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path], *,
                    image_size_loader: Callable[[Path], tuple[int, int]] | None = None) -> ImportResult:
+    conflicts = mapping_conflicts(mapping)
+    if conflicts:
+        raise ValueError("\n".join(conflicts))
     index: dict[str, list[Path]] = defaultdict(list)
     for path in images:
         index[name_key(path.name)].append(path)
@@ -367,6 +411,17 @@ def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path],
         else:
             result.referenced.add(path)
             result.detections.setdefault(path, [])
+        metadata_size = None
+        if path is not None and mapping.width_field and mapping.height_field:
+            try:
+                metadata_size = image_dimensions((read_pointer(record, mapping.width_field), read_pointer(record, mapping.height_field)))
+                previous = result.image_sizes.get(path)
+                if previous and previous != metadata_size:
+                    result.size_issues[path] = "同图不同记录的图片宽高不一致；导出前需要确认实际图片尺寸。"
+                elif path not in result.size_issues:
+                    result.image_sizes[path] = metadata_size
+            except ValueError as exc:
+                result.size_issues[path] = f"02 的图片宽高字段无效：{exc}；请检查是否误选了目标框的 w / h。"
         size = None
         if mapping.normalized and targets:
             # Unmatched targets are validated in unit coordinates and never retained.
@@ -381,6 +436,11 @@ def import_results(document: Any, mapping: FieldMapping, images: Iterable[Path],
                                 or not math.isfinite(v) or v <= 0 for v in dimensions)):
                             raise ValueError("图片宽高无效")
                         image_sizes[path] = dimensions
+                        actual_size = image_dimensions(dimensions)
+                        if metadata_size and metadata_size != actual_size:
+                            result.size_issues[path] = "02 的图片宽高与实际图片不一致，已优先使用实际图片尺寸。"
+                        result.image_sizes[path] = actual_size
+                        result.actual_size_images.add(path)
                     except (OSError, ValueError) as exc:
                         image_sizes[path] = str(exc)
                 size = image_sizes[path]

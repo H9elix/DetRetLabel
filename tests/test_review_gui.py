@@ -288,7 +288,7 @@ class ReviewGuiTests(unittest.TestCase):
     def test_manual_single_click_inspects_and_double_click_edits_existing_miss(self):
         review = self.w.review
         review.all_positive()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("dog", True)):
             review.add_manual((300, 10, 350, 80))
         target_id = review.current.id
         review.choose_reason("原原因")
@@ -681,7 +681,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.assertTrue(self.w.image_view.draw_mode)
         view = self.w.image_view
         start, end = view.mapFromScene(QPointF(30, 40)), view.mapFromScene(QPointF(160, 180))
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("dog", True)):
             QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
             QTest.mouseMove(view.viewport(), end)
             QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
@@ -1275,7 +1275,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.key(Qt.Key.Key_B)
         self.assertEqual(review.phase, "algorithm")
         self.assertFalse(view.draw_mode)
-        with patch("detretlabel.review_controller.QInputDialog.getText") as dialog:
+        with patch("detretlabel.review_controller.choose_manual_category") as dialog:
             review.add_manual((1, 2, 30, 40))
         dialog.assert_not_called()
         self.assertTrue(panel.review_button.isEnabled())
@@ -1296,7 +1296,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.key(Qt.Key.Key_1)
         self.assertFalse(review.algorithm_ready())
         self.assertTrue(review.start_review())
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("人工漏检", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("人工漏检", True)):
             review.add_manual((300, 10, 350, 80))
         manual_id = review.current.id
         review.choose_reason("完全未检出")
@@ -1425,7 +1425,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.w.image_table.setCurrentCell(2, 0)
         review = self.w.review
         review.start_review()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("dog", True)):
             review.add_manual((30, 40, 100, 120))
         target = review.current
         self.assertEqual(target.role, "manual")
@@ -1470,7 +1470,7 @@ class ReviewGuiTests(unittest.TestCase):
         self.w.image_table.setCurrentCell(2, 0)
         review = self.w.review
         review.start_review()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("dog", True)):
             review.add_manual((30, 40, 100, 120))
         target_id = review.current.id
         editor = self.w.annotation_panel.reason_combo.lineEdit()
@@ -1486,7 +1486,7 @@ class ReviewGuiTests(unittest.TestCase):
         review, panel = self.w.review, self.w.annotation_panel
         self.assertEqual(review.config.shortcuts["finish_review"], "Space")
         review.all_positive()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("dog", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("dog", True)):
             review.add_manual((30, 40, 100, 120))
         review.choose_reason("完全未检出")
         panel.note.setFocus()
@@ -1649,11 +1649,56 @@ class ReviewGuiTests(unittest.TestCase):
             self.assertEqual(detail["O5"].value, "最新备注")
         finally:
             book.close()
+        self.assertFalse((self.folder / "过程报告_有效目标.json").exists())
         self.assertEqual(review.current.id, target_id)
         self.assertEqual(review.reason_status, "false_positive")
         self.assertEqual(review.phase, "algorithm")
         self.assertEqual(panel.reason_combo.currentText(), "未确认原因草稿")
         self.assertFalse(review.review_completed())
+
+    def test_exports_live_in_persistent_step_five_outside_review_steps(self):
+        panel = self.w.annotation_panel
+        self.assertEqual(panel.export_title.text(), "05  保存与导出")
+        self.assertFalse(panel.widget().isAncestorOf(panel.export_frame))
+        for button in (panel.save_button, panel.export_button, panel.json_export_button):
+            self.assertTrue(panel.export_frame.isAncestorOf(button))
+            self.assertFalse(panel.widget().isAncestorOf(button))
+        original = panel.export_frame.mapTo(self.w, QPoint())
+        panel.verticalScrollBar().setValue(panel.verticalScrollBar().maximum())
+        self.app.processEvents()
+        self.assertEqual(panel.export_frame.mapTo(self.w, QPoint()), original)
+        self.w._run("测试忙碌状态", lambda: None, lambda result: None)
+        self.assertFalse(panel.export_frame.isEnabled())
+        self.wait()
+        self.assertTrue(panel.export_frame.isEnabled())
+
+    def test_export_never_remaps_automatically_and_only_obeys_explicit_remap_choice(self):
+        from detretlabel.export_dialogs import ExportCheckDialog
+        self.w.review.all_positive()
+        path = self.folder / "warnings-only.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+             patch.object(self.w, "remap_json") as remap, \
+             patch.object(ExportCheckDialog, "exec") as dialog:
+            self.w.annotation_panel.json_export_button.click()
+            self.wait()
+        self.assertTrue(path.exists())
+        remap.assert_not_called()
+        dialog.assert_not_called()
+        self.import_source([{"name": "01.jpg", "bbox": [1, 2, 30, 40]}])
+        self.w.review.all_positive()
+        for choice in (QDialog.DialogCode.Rejected, ExportCheckDialog.REMAP):
+            path = self.folder / f"remap-choice-{choice}.json"
+            with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+                 patch.object(self.w, "remap_json") as remap, \
+                 patch.object(ExportCheckDialog, "exec", return_value=choice):
+                self.w.annotation_panel.json_export_button.click()
+                self.wait()
+                self.app.processEvents()
+            self.assertFalse(path.exists())
+            if choice == ExportCheckDialog.REMAP:
+                remap.assert_called_once_with("algorithm")
+            else:
+                remap.assert_not_called()
 
     def test_export_cancellation_failure_and_completed_report(self):
         from openpyxl import load_workbook
@@ -1662,6 +1707,7 @@ class ReviewGuiTests(unittest.TestCase):
         with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=("", "")):
             panel.export_button.click()
         self.assertFalse(path.exists())
+        self.assertFalse((self.folder / "report_有效目标.json").exists())
         path.write_bytes(b"previous report")
         with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
              patch("detretlabel.review_controller.write_excel", side_effect=PermissionError("file in use")), \
@@ -1685,11 +1731,207 @@ class ReviewGuiTests(unittest.TestCase):
             self.assertEqual([book["图片进度"].cell(row, 8).value for row in range(5, 8)], ["复核完成"] * 3)
         finally:
             book.close()
+        self.assertFalse((self.folder / "report_有效目标.json").exists())
+
+    def test_report_json_includes_hidden_positives_and_manual_misses_but_excludes_gt_and_false_positives(self):
+        self.matching_gt()
+        review = self.w.review
+        first, second = review.role_targets("algorithm")
+        review.store.set_annotation(first, "true_positive", note="已确认正检")
+        review.store.set_annotation(second, "false_positive", "种类错误")
+        hidden = review.role_targets("algorithm", self.folder / "02.png")[0]
+        review.store.set_annotation(hidden, "true_positive")
+        review.start_review()
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("补漏目标", True)):
+            review.add_manual((11, 22, 88, 99))
+        review.choose_reason("未检出")
+        self.w.search.setText("01")
+        path = self.folder / "all-loaded.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+            self.w.annotation_panel.json_export_button.click()
+        self.wait()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual([target["name"] for target in data], ["01.jpg", "01.jpg", "02.png"])
+        self.assertEqual([target["type"] for target in data], ["person", "补漏目标", "cat"])
+        self.assertEqual((data[1]["conf"], data[1]["width"], data[1]["height"]), (1, 640, 400))
+        self.assertAlmostEqual(data[1]["x"], 11 / 640)
+        self.assertTrue(all(not any(isinstance(value, (list, dict)) for value in target.values()) for target in data))
+        self.assertFalse(path.with_suffix(".xlsx").exists())
+        self.assertIn("检查报告", self.w.statusBar().currentMessage())
+
+    def test_export_with_flat_input_uses_mapped_fields(self):
+        self.import_source([{"name": "01.jpg", "xywh": [10, 20, 100, 150], "label": "person", "confidence": .7}])
+        self.w.review.all_positive()
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("人工目标", True)):
+            self.w.review.add_manual((20, 30, 60, 90))
+        path = self.folder / "mapped.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+            self.w.annotation_panel.json_export_button.click()
+        self.wait()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual((data[0]["x"], data[0]["y"]), (10 / 640, 20 / 400))
+        self.assertEqual(data[0]["conf"], .7)
+        self.assertEqual((data[1]["x"], data[1]["y"], data[1]["w"], data[1]["h"]), (20 / 640, 30 / 400, 40 / 640, 60 / 400))
+        self.assertEqual(data[1]["conf"], 1)
+        self.assertIn('"conf": 1.00000000', path.read_text(encoding="utf-8"))
+
+    def test_json_export_cancellation_failure_and_protection_of_input_files(self):
+        panel, review = self.w.annotation_panel, self.w.review
+        path = self.folder / "review.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=("", "")):
+            panel.json_export_button.click()
+        self.assertFalse(path.exists())
+        path.write_bytes(b"old targets")
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+             patch("detretlabel.review_controller.write_export_files", side_effect=PermissionError("file in use")), \
+             patch.object(review, "_show_export_failure") as failure:
+            panel.json_export_button.click()
+            self.wait()
+        failure.assert_called_once()
+        self.assertEqual(path.read_bytes(), b"old targets")
+        original = self.w.sources["algorithm"].path
+        contents = original.read_bytes()
+        for protected in (original, review.store.path):
+            with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(protected), "")), \
+                 patch("detretlabel.review_controller.QMessageBox.warning") as warning:
+                panel.json_export_button.click()
+            warning.assert_called_once()
+        self.assertEqual(original.read_bytes(), contents)
+
+    def test_export_missing_type_is_blocked_and_generates_a_check_report(self):
+        self.import_source([{"name": "01.jpg", "bbox": [1, 2, 30, 40], "score": .9}])
+        self.w.review.all_positive()
+        path = self.folder / "missing-type.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+             patch("detretlabel.review_controller.ExportCheckDialog.exec", return_value=QDialog.DialogCode.Rejected):
+            self.w.annotation_panel.json_export_button.click()
+            self.wait()
+        self.assertFalse(path.exists())
+        report = self.folder / "missing-type_导出检查.xlsx"
+        from openpyxl import load_workbook
+        book = load_workbook(report)
+        try:
+            self.assertIn("02", book["检查明细"]["J2"].value)
+        finally:
+            book.close()
+        self.assertEqual(self.w.review.store.get(self.w.review.role_targets("algorithm")[0].id)["status"], "true_positive")
+
+    def test_export_missing_dimensions_can_be_repaired_without_losing_annotations(self):
+        from detretlabel.export_dialogs import ExportCheckDialog
+        review = self.w.review
+        review.all_positive()
+        ids = [target.id for target in review.role_targets("algorithm")]
+        review.store.image_sizes.clear()
+        review.store.image_size_sources.clear()
+        path = self.folder / "repaired.json"
+        def repair(dialog):
+            for width, height in dialog.dimension_spins.values():
+                width.setValue(640)
+                height.setValue(400)
+            return ExportCheckDialog.FIX_SIZES
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+             patch.object(self.w, "_image_dimensions", side_effect=ValueError("offline")), \
+             patch.object(ExportCheckDialog, "exec", repair):
+            self.w.annotation_panel.json_export_button.click()
+            self.wait()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(len(data), 2)
+        self.assertEqual((data[0]["width"], data[0]["height"]), (640, 400))
+        self.assertTrue(all(review.store.get(identity)["status"] == "true_positive" for identity in ids))
+        self.assertEqual(review.store.image_size_sources["01.jpg"], "manual")
+
+    def test_partial_export_skips_only_after_explicit_choice_and_reports_omissions(self):
+        from detretlabel.export_dialogs import ExportCheckDialog
+        review = self.w.review
+        review.all_positive()
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=(None, True)):
+            review.add_manual((10, 20, 30, 40))
+        path = self.folder / "partial.json"
+        with patch("detretlabel.review_controller.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+             patch.object(ExportCheckDialog, "exec", return_value=ExportCheckDialog.PARTIAL):
+            self.w.annotation_panel.json_export_button.click()
+            self.wait()
+        self.assertEqual(len(json.loads(path.read_text(encoding="utf-8"))), 2)
+        from openpyxl import load_workbook
+        book = load_workbook(self.folder / "partial_导出检查.xlsx")
+        try:
+            self.assertEqual(book["导出概览"]["B2"].value, "仅导出有效部分")
+            self.assertIn("跳过该目标", [row[8].value for row in list(book["检查明细"].rows)[1:]])
+        finally:
+            book.close()
+        self.assertIsNone(review.current.category)
+
+    def test_saved_mapping_and_dimensions_restore_on_another_computer_settings(self):
+        self.w.set_type_mapping("algorithm", TypeMapping({"person": "0", "car": "汽车"}))
+        first = self.w.review.current.id
+        self.w.review.choose_status("true_positive")
+        self.w.review.save()
+        self.w.close()
+        self.w = MainWindow(QSettings(str(self.folder / "another-machine.ini"), QSettings.Format.IniFormat))
+        self.w.show()
+        self.w.scan_folder(self.folder)
+        self.wait()
+        self.import_source(self.data)
+        self.assertEqual(self.w.type_mappings["algorithm"].entries, {"person": "0", "car": "汽车"})
+        self.assertEqual(self.w.review.store.get(first)["status"], "true_positive")
+        self.assertEqual(self.w.review.store.image_sizes["01.jpg"], (640, 400))
+
+    def test_remapping_only_image_dimensions_does_not_orphan_existing_annotations(self):
+        data = copy.deepcopy(self.data)
+        for record in data["results"]:
+            record.update(width=640, height=400)
+        self.import_source(data)
+        review = self.w.review
+        first = review.current.id
+        signature = self.w.sources["algorithm"].signature
+        review.choose_status("true_positive")
+        def clear_size_fields(dialog):
+            dialog.width_combo.setCurrentIndex(0)
+            dialog.height_combo.setCurrentIndex(0)
+            return QDialog.DialogCode.Accepted
+        with patch.object(MappingDialog, "exec", clear_size_fields):
+            self.w.remap_json("algorithm")
+        self.wait()
+        self.assertEqual(self.w.sources["algorithm"].signature, signature)
+        self.assertIn(first, review.targets)
+        self.assertEqual(review.store.get(first)["status"], "true_positive")
+
+    def test_filling_previously_unmapped_type_and_confidence_retains_the_correct_old_decisions(self):
+        data = copy.deepcopy(self.data)
+        data["results"][0]["detections"][0]["conf"] = .2
+        data["results"][0]["detections"][1]["conf"] = .9
+        def omit(dialog):
+            dialog.category_combo.setCurrentIndex(0)
+            dialog.score_combo.setCurrentIndex(0)
+            return QDialog.DialogCode.Accepted
+        with patch.object(MappingDialog, "exec", omit):
+            self.w._map_document(data, self.folder / "enrich.json")
+        self.wait()
+        review = self.w.review
+        before = review.role_targets("algorithm")
+        self.assertIsNone(before[0].category)
+        review.store.set_annotation(before[0], "true_positive", note="原始第一个框")
+        review.store.set_annotation(before[1], "false_positive", "误检原因")
+        review.store.set_image_review("01.jpg", review.algorithm_signature(), True)
+        def fill(dialog):
+            dialog._select(dialog.category_combo, "/type")
+            dialog._select(dialog.score_combo, "/conf")
+            return QDialog.DialogCode.Accepted
+        with patch.object(MappingDialog, "exec", fill):
+            self.w.remap_json("algorithm")
+        self.wait()
+        after = review.role_targets("algorithm")
+        self.assertEqual([target.category for target in after], ["car", "person"])
+        self.assertEqual(review.store.get(after[0].id)["reason"], "误检原因")
+        self.assertEqual(review.store.get(after[1].id)["status"], "true_positive")
+        self.assertEqual(review.store.get(after[1].id)["note"], "原始第一个框")
+        self.assertTrue(review.miss_review_completed())
+        self.assertTrue(all(review.store.get(target.id) for target in before))  # History is retained.
 
     def test_clear_image_requires_confirmation_and_can_undo_complete_review(self):
         review, panel = self.w.review, self.w.annotation_panel
         review.all_positive()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("人工行人", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("人工行人", True)):
             review.add_manual((1, 2, 30, 40))
         review.choose_reason("完全未检出")
         manual_id = review.current.id
@@ -1793,7 +2035,7 @@ class ReviewGuiTests(unittest.TestCase):
     def test_progress_can_move_to_another_folder_with_fresh_settings(self):
         review = self.w.review
         review.all_positive()
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("人工目标", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("人工目标", True)):
             review.add_manual((10, 20, 50, 60))
         manual_id = review.current.id
         review.choose_reason("人工确认漏检")

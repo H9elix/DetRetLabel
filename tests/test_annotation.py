@@ -46,6 +46,8 @@ class AnnotationDataTests(unittest.TestCase):
         mapping = FieldMapping(Collection(""), "/name", box_field="/bbox")
         legacy_fields = asdict(mapping)
         legacy_fields.pop("normalized")
+        legacy_fields.pop("width_field")
+        legacy_fields.pop("height_field")
         legacy_payload = json.dumps([document, legacy_fields], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         self.assertEqual(source_signature(document, mapping), hashlib.sha256(legacy_payload.encode()).hexdigest())
         self.assertNotEqual(source_signature(document, mapping), source_signature(document, replace(mapping, normalized=True)))
@@ -128,6 +130,46 @@ class AnnotationDataTests(unittest.TestCase):
                 path.write_text(json.dumps(invalid), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     ReviewConfig.load(path)
+
+    def test_export_metadata_roundtrip_and_old_progress_without_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = AnnotationStore(Path(temporary))
+            target = self.target()
+            store.set_annotation(target, "true_positive")
+            store.remember_image_size("image.jpg", (640, 400))
+            store.remember_image_size("image.jpg", (123, 456), "json")
+            self.assertEqual(store.image_sizes["image.jpg"], (640, 400))
+            store.remember_type_mapping("algorithm", {"person": "0"})
+            store.save()
+            loaded = AnnotationStore.load(Path(temporary))
+            self.assertEqual(loaded.image_sizes["image.jpg"], (640, 400))
+            self.assertEqual(loaded.type_mappings["algorithm"]["person"], "0")
+            self.assertEqual(loaded.get(target.id)["status"], "true_positive")
+            data = json.loads(store.path.read_text(encoding="utf-8"))
+            for key in ("image_sizes", "image_size_sources", "type_mappings"):
+                data.pop(key)
+            store.path.write_text(json.dumps(data), encoding="utf-8")
+            old = AnnotationStore.load(Path(temporary))
+            self.assertEqual(old.image_sizes, {})
+            self.assertEqual(old.get(target.id)["status"], "true_positive")
+
+    def test_auxiliary_dimensions_are_excluded_from_review_identity(self):
+        document = [{"name": "image.jpg", "bbox": [1, 2, 30, 40], "width": 640, "height": 400}]
+        mapping = FieldMapping(Collection(""), "/name", box_field="/bbox", normalized=True)
+        self.assertEqual(source_signature(document, mapping), source_signature(document,
+            replace(mapping, width_field="/width", height_field="/height")))
+
+    def test_editing_manual_category_keeps_raw_value_type_and_is_undoable(self):
+        store = AnnotationStore()
+        target = ReviewTarget.manual("image.jpg", (1, 2, 30, 40), "0")
+        store.set_annotation(target, "false_negative", "原因", "备注")
+        store.set_image_review("image.jpg", "sig", True)
+        store.set_annotation(replace(target, category=0), "false_negative", "原因", "备注")
+        self.assertIsInstance(store.manual_targets[target.id].category, int)
+        self.assertFalse(store.review_completed("image.jpg", "sig"))
+        store.undo()
+        self.assertEqual(store.manual_targets[target.id].category, "0")
+        self.assertTrue(store.review_completed("image.jpg", "sig"))
 
     def test_bulk_transaction_restores_all_targets_and_review_state_in_one_undo(self):
         store, first = AnnotationStore(), self.target()

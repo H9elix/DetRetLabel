@@ -277,6 +277,37 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(source.signature, signature)
         self.assertEqual(source.result.detections[self.folder / "0001.jpg"][0].box, target.box)
 
+    def test_mapping_conflicts_and_half_mapped_dimensions_are_rejected_before_import(self):
+        data = [{"name": "0001.jpg", "x": .1, "y": .2, "w": .3, "h": .4,
+                 "width": 640, "height": 400, "type": "car", "conf": .9}]
+        dialog = MappingDialog(data, "fields.json", self.window)
+        self.assertEqual(dialog.mapping().coordinates, ("/x", "/y", "/w", "/h"))
+        dialog._select(dialog.width_combo, "/w")
+        dialog._select(dialog.height_combo, "/h")
+        dialog.accept()
+        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertIn("冲突", dialog.error.text())
+        dialog._select(dialog.width_combo, "/width")
+        dialog._select(dialog.height_combo, None)
+        dialog.accept()
+        self.assertIn("同时", dialog.error.text())
+        dialog._select(dialog.height_combo, "/height")
+        dialog._select(dialog.score_combo, "/type")
+        dialog.accept()
+        self.assertIn("冲突", dialog.error.text())
+        dialog._select(dialog.score_combo, "/conf")
+        dialog.accept()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+    def test_box_width_height_fields_are_not_auto_mapped_as_image_dimensions(self):
+        data = [{"name": "0001.jpg", "x": 1, "y": 2, "width": 30, "height": 40, "type": "car"}]
+        dialog = MappingDialog(data, "box-dimensions.json", self.window)
+        self.assertEqual(dialog.mapping().coordinates, ("/x", "/y", "/width", "/height"))
+        self.assertIsNone(dialog.mapping().width_field)
+        self.assertIsNone(dialog.mapping().height_field)
+        dialog.accept()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
     def test_normalized_gt_mapping_is_independent_and_matches_pixel_algorithm(self):
         self.load_source()
         data = [{"name": "0001.jpg", "xmin": 10 / 640, "ymin": 20 / 400,

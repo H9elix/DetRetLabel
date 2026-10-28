@@ -151,7 +151,7 @@ def main():
         QTest.qWait(30)
         app.processEvents()
         window.grab().save(str(output / "review-missed-check.png"))
-        with patch("detretlabel.review_controller.QInputDialog.getText", return_value=("person", True)):
+        with patch("detretlabel.review_controller.choose_manual_category", return_value=("person", True)):
             window.review.add_manual((320, 350, 360, 510))
         app.processEvents()
         QTest.qWait(30)
